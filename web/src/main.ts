@@ -102,6 +102,7 @@ function boot(): void {
         } else {
           scene.setAimButton(msg.aim_button);
         }
+        scene.setHandSensors(msg.hand_l_sensor ?? null, msg.hand_r_sensor ?? null);
 
         scene.setPose(msg.pose);
         hud.setScore(msg.score);

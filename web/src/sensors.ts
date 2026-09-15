@@ -2,14 +2,28 @@
 
 export type Area = "A" | "B" | "C" | "D" | "E";
 
-/** Radii of zone centers (relative to outer playfield). */
+/**
+ * Radii of zone centers (relative to outer playfield).
+ * Outer ring is one band of 16 A/D wedges; E sits in the B-ring gaps.
+ */
 export const RADIUS: Record<Area, number> = {
   C: 0,
-  B: 0.4,
-  E: 0.58,
-  A: 0.86,
-  D: 0.86,
+  B: 0.36,
+  E: 0.54,
+  A: 0.81,
+  D: 0.81,
 };
+
+/** Pad outline (unit disk). Shared by the overlay so hit points sit in-cell. */
+export const PAD = {
+  cR: 0.195,
+  bOct: 0.115,
+  eRadial: 0.09,
+  eTangent: 0.08,
+  adInner: 0.63,
+  adOuter: 0.995,
+  adHalf: Math.PI / 16,
+} as const;
 
 export function parseSensor(sensor: string): { area: Area; index: number } {
   const s = sensor.trim().toUpperCase();

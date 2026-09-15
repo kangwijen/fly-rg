@@ -127,7 +127,38 @@ async def _play_once(
                 )
             )
 
-        if dec.tap and dec.tap_sensor is not None:
+        if dec.tap_l and dec.hand_l_sensor is not None:
+            hit = judge.press(dec.hand_l_sensor, sim_t)
+            if hit is not None:
+                emit(
+                    hit_message(
+                        t=hit.t,
+                        button=hit.button,
+                        sensor=hit.sensor,
+                        judgment=hit.judgment,
+                    )
+                )
+        if (
+            dec.tap_r
+            and dec.hand_r_sensor is not None
+            and dec.hand_r_sensor != (dec.hand_l_sensor if dec.tap_l else None)
+        ):
+            hit = judge.press(dec.hand_r_sensor, sim_t)
+            if hit is not None:
+                emit(
+                    hit_message(
+                        t=hit.t,
+                        button=hit.button,
+                        sensor=hit.sensor,
+                        judgment=hit.judgment,
+                    )
+                )
+        if (
+            dec.tap
+            and dec.tap_sensor is not None
+            and dec.tap_sensor != dec.hand_l_sensor
+            and dec.tap_sensor != dec.hand_r_sensor
+        ):
             hit = judge.press(dec.tap_sensor, sim_t)
             if hit is not None:
                 emit(
@@ -160,9 +191,16 @@ async def _play_once(
                 active=judge.active_notes(sim_t, args.look_ahead),
                 active_sensors=judge.active_sensors(sim_t, args.look_ahead),
                 drive=enc.drive,
-                pose={"aim": dec.aim, "strike": dec.strike},
+                pose={
+                    "aim": dec.aim,
+                    "strike": dec.strike,
+                    "strike_l": dec.strike_l,
+                    "strike_r": dec.strike_r,
+                },
                 spikes=spikes,
                 spike_total=len(fired_list) if fired_list else len(spikes),
+                hand_l_sensor=dec.hand_l_sensor,
+                hand_r_sensor=dec.hand_r_sensor,
             )
         )
 

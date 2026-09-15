@@ -1,11 +1,11 @@
 import type { ActiveNote, Judgment } from "./protocol";
 import {
+  PAD,
   RADIUS,
   buttonToSensor,
   sensorAngleRad,
   sensorXY,
   toCanvas,
-  type Area,
 } from "./sensors";
 
 const SIZE = 1024;
@@ -22,18 +22,17 @@ const COLORS = {
   ring: "#1a2740",
   ringGlow: "#2a3f63",
   pad: "rgba(19, 32, 51, 0.5)",
-  padStroke: "rgba(61, 224, 208, 0.85)",
+  padStroke: "rgba(61, 224, 208, 0.9)",
   padMuted: "rgba(61, 224, 208, 0.55)",
   note: "#e24f9c",
   noteCore: "#ffe6f4",
-  guide: "rgba(61, 224, 208, 0.28)",
   slide: "#3de0d0",
   text: "#d8e6f4",
   textBright: "#ffffff",
   textStroke: "rgba(4, 8, 16, 0.92)",
   aim: "#e24f9c",
   active: "#5ad6d0",
-  cSplit: "rgba(61, 224, 208, 0.55)",
+  cSplit: "rgba(61, 224, 208, 0.7)",
 };
 
 const JUDGMENT_COLORS: Record<Judgment, string> = {
@@ -43,16 +42,7 @@ const JUDGMENT_COLORS: Record<Judgment, string> = {
   miss: "#ff5a6a",
 };
 
-const OUTER_HALF = Math.PI / 16; // 16 alternating A/D wedges on outer ring
-const B_HALF = Math.PI / 8 - 0.06;
-const A_INNER = 0.72;
-const A_OUTER = 0.98;
-const D_INNER = 0.72;
-const D_OUTER = 0.98;
-const B_INNER = 0.26;
-const B_OUTER = 0.5;
-const E_SIZE = 0.07;
-const C_R = 0.2;
+const OUTER_STEPS = 10;
 
 interface Flash {
   sensor: string;
@@ -209,37 +199,13 @@ export class RingDisplay {
     }
     ctx.restore();
 
-    this.drawGuideRings();
+    this.drawPads(nowMs);
 
-    // Pads at 50% opacity so jacket / disk shows through.
-    ctx.save();
-    ctx.globalAlpha = 0.5;
-    this.drawCenterC(nowMs, false);
-    for (let i = 1; i <= 8; i++) {
-      this.drawWedgePad(`B${i}`, "B", i, B_INNER, B_OUTER, B_HALF, nowMs, false);
-    }
-    for (let i = 1; i <= 8; i++) {
-      this.drawDiamondPad(`E${i}`, E_SIZE, nowMs, false);
-    }
-    for (let i = 1; i <= 8; i++) {
-      this.drawWedgePad(`D${i}`, "D", i, D_INNER, D_OUTER, OUTER_HALF, nowMs, false);
-    }
-    for (let i = 1; i <= 8; i++) {
-      this.drawWedgePad(`A${i}`, "A", i, A_INNER, A_OUTER, OUTER_HALF, nowMs, false);
-    }
-    ctx.restore();
-
-    // Labels full-opacity on top. Skip A* — those live on the 3D bezel buttons.
     this.drawCenterC(nowMs, true);
-    for (let i = 1; i <= 8; i++) {
-      this.drawSensorLabel(`B${i}`);
-    }
-    for (let i = 1; i <= 8; i++) {
-      this.drawSensorLabel(`E${i}`);
-    }
-    for (let i = 1; i <= 8; i++) {
-      this.drawSensorLabel(`D${i}`);
-    }
+    for (let i = 1; i <= 8; i++) this.drawSensorLabel(`B${i}`);
+    for (let i = 1; i <= 8; i++) this.drawSensorLabel(`E${i}`);
+    for (let i = 1; i <= 8; i++) this.drawSensorLabel(`D${i}`);
+    for (let i = 1; i <= 8; i++) this.drawSensorLabel(`A${i}`);
 
     this.drawAllSlidePaths();
 
@@ -251,16 +217,8 @@ export class RingDisplay {
   private drawSensorLabel(sensor: string): void {
     const { ctx } = this;
     const p = padPoint(sensor);
-    let x = p.x;
-    let y = p.y;
     const area = sensor[0];
-    if (area === "D") {
-      // Sit in the wedge body, clear of the A bezel.
-      const inward = 0.78;
-      x = CENTER + (p.x - CENTER) * (inward / RADIUS.D);
-      y = CENTER + (p.y - CENTER) * (inward / RADIUS.D);
-    }
-    const size = area === "E" ? Math.round(13 * S) : Math.round(15 * S);
+    const size = area === "E" ? Math.round(12 * S) : Math.round(15 * S);
     ctx.font = `700 ${size}px 'IBM Plex Mono', monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -269,19 +227,149 @@ export class RingDisplay {
     ctx.shadowBlur = 4 * S;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
-    ctx.fillText(sensor, x, y);
+    ctx.fillText(sensor, p.x, p.y);
     ctx.shadowBlur = 0;
   }
 
-  private drawGuideRings(): void {
+  private drawPads(nowMs: number): void {
     const { ctx } = this;
-    ctx.strokeStyle = COLORS.guide;
-    ctx.lineWidth = 1.25 * S;
-    for (const r of [RADIUS.B, RADIUS.E, RADIUS.A]) {
-      ctx.beginPath();
-      ctx.arc(CENTER, CENTER, r * OUTER_R, 0, Math.PI * 2);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(CENTER, CENTER, OUTER_R, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.lineWidth = 2 * S;
+
+    const fillPad = (path: () => void, style: ReturnType<RingDisplay["highlightStyle"]>): void => {
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      if (style.glow > 0) {
+        ctx.shadowColor = style.stroke;
+        ctx.shadowBlur = style.glow;
+      }
+      path();
+      ctx.fillStyle = style.fill;
+      ctx.fill();
+      ctx.restore();
+      path();
+      ctx.strokeStyle = COLORS.padStroke;
+      ctx.globalAlpha = 0.9;
       ctx.stroke();
+      ctx.globalAlpha = 1;
+    };
+
+    this.drawCenterC(nowMs, false);
+    for (let i = 1; i <= 8; i++) {
+      const sensor = `B${i}`;
+      fillPad(() => this.bOctagonPath(i), this.highlightStyle(sensor, nowMs));
     }
+    for (let i = 1; i <= 8; i++) {
+      const sensor = `E${i}`;
+      fillPad(() => this.eDiamondPath(i), this.highlightStyle(sensor, nowMs));
+    }
+    for (let i = 1; i <= 8; i++) {
+      const sensor = `D${i}`;
+      fillPad(() => this.adWedgePath("D", i), this.highlightStyle(sensor, nowMs));
+    }
+    for (let i = 1; i <= 8; i++) {
+      const sensor = `A${i}`;
+      fillPad(() => this.adWedgePath("A", i), this.highlightStyle(sensor, nowMs));
+    }
+    ctx.restore();
+  }
+
+  private adWedgePath(area: "A" | "D", index: number): void {
+    const { ctx } = this;
+    const mid = sensorAngleRad(area, index);
+    const a0 = mid - PAD.adHalf;
+    const a1 = mid + PAD.adHalf;
+    ctx.beginPath();
+    for (let s = 0; s <= OUTER_STEPS; s++) {
+      const t = s / OUTER_STEPS;
+      const ang = a0 + (a1 - a0) * t;
+      const p = toCanvas(
+        PAD.adOuter * Math.cos(ang),
+        PAD.adOuter * Math.sin(ang),
+        CENTER,
+        OUTER_R,
+      );
+      if (s === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    const inner1 = toCanvas(
+      PAD.adInner * Math.cos(a1),
+      PAD.adInner * Math.sin(a1),
+      CENTER,
+      OUTER_R,
+    );
+    const inner0 = toCanvas(
+      PAD.adInner * Math.cos(a0),
+      PAD.adInner * Math.sin(a0),
+      CENTER,
+      OUTER_R,
+    );
+    ctx.lineTo(inner1.x, inner1.y);
+    ctx.lineTo(inner0.x, inner0.y);
+    ctx.closePath();
+  }
+
+  private bOctagonPath(index: number): void {
+    const { ctx } = this;
+    const mid = sensorAngleRad("B", index);
+    const cx = RADIUS.B * Math.cos(mid);
+    const cy = RADIUS.B * Math.sin(mid);
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const ang = mid + Math.PI / 8 + (i * Math.PI) / 4;
+      const p = toCanvas(
+        cx + PAD.bOct * Math.cos(ang),
+        cy + PAD.bOct * Math.sin(ang),
+        CENTER,
+        OUTER_R,
+      );
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+  }
+
+  private eDiamondPath(index: number): void {
+    const { ctx } = this;
+    const mid = sensorAngleRad("E", index);
+    const c = Math.cos(mid);
+    const s = Math.sin(mid);
+    const outer = toCanvas(
+      (RADIUS.E + PAD.eRadial) * c,
+      (RADIUS.E + PAD.eRadial) * s,
+      CENTER,
+      OUTER_R,
+    );
+    const inner = toCanvas(
+      (RADIUS.E - PAD.eRadial) * c,
+      (RADIUS.E - PAD.eRadial) * s,
+      CENTER,
+      OUTER_R,
+    );
+    const left = toCanvas(
+      RADIUS.E * c - PAD.eTangent * s,
+      RADIUS.E * s + PAD.eTangent * c,
+      CENTER,
+      OUTER_R,
+    );
+    const right = toCanvas(
+      RADIUS.E * c + PAD.eTangent * s,
+      RADIUS.E * s - PAD.eTangent * c,
+      CENTER,
+      OUTER_R,
+    );
+    ctx.beginPath();
+    ctx.moveTo(outer.x, outer.y);
+    ctx.lineTo(left.x, left.y);
+    ctx.lineTo(inner.x, inner.y);
+    ctx.lineTo(right.x, right.y);
+    ctx.closePath();
   }
 
   private highlightStyle(
@@ -320,139 +408,49 @@ export class RingDisplay {
     };
   }
 
-  private drawWedgePad(
-    sensor: string,
-    area: Area,
-    index: number,
-    inner: number,
-    outer: number,
-    half: number,
-    nowMs: number,
-    labelsOnly: boolean,
-  ): void {
-    if (labelsOnly) return;
-    const { ctx } = this;
-    const mid = sensorAngleRad(area, index);
-    // Canvas arcs: angle increases clockwise from +X. Math angles use y-up, so
-    // canvasAngle = -mathAngle. Sweep clockwise from mid-half to mid+half.
-    const aStart = -(mid - half);
-    const aEnd = -(mid + half);
-    const style = this.highlightStyle(sensor, nowMs);
-    const r0 = inner * OUTER_R;
-    const r1 = outer * OUTER_R;
-
-    const path = () => {
-      ctx.beginPath();
-      ctx.arc(CENTER, CENTER, r1, aStart, aEnd, false);
-      ctx.arc(CENTER, CENTER, r0, aEnd, aStart, true);
-      ctx.closePath();
-    };
-
-    if (style.glow > 0) {
-      ctx.save();
-      ctx.shadowColor = style.stroke;
-      ctx.shadowBlur = style.glow;
-      path();
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-      ctx.restore();
-    } else {
-      path();
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-    }
-
-    path();
-    ctx.strokeStyle = style.stroke;
-    ctx.lineWidth = 2 * S;
-    ctx.stroke();
-  }
-
-  private drawDiamondPad(
-    sensor: string,
-    sizeUnit: number,
-    nowMs: number,
-    labelsOnly: boolean,
-  ): void {
-    if (labelsOnly) return;
-    const { ctx } = this;
-    const p = padPoint(sensor);
-    const s = sizeUnit * OUTER_R;
-    const style = this.highlightStyle(sensor, nowMs);
-    const path = () => {
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y - s);
-      ctx.lineTo(p.x + s * 0.75, p.y);
-      ctx.lineTo(p.x, p.y + s);
-      ctx.lineTo(p.x - s * 0.75, p.y);
-      ctx.closePath();
-    };
-    if (style.glow > 0) {
-      ctx.save();
-      ctx.shadowColor = style.stroke;
-      ctx.shadowBlur = style.glow;
-      path();
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-      ctx.restore();
-    } else {
-      path();
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-    }
-    path();
-    ctx.strokeStyle = style.stroke;
-    ctx.lineWidth = 2 * S;
-    ctx.stroke();
-  }
-
   private drawCenterC(nowMs: number, labelsOnly: boolean): void {
     const { ctx } = this;
-    const r = C_R * OUTER_R;
+    const r = PAD.cR;
     const style = this.highlightStyle("C", nowMs);
-    // Flattened octagon matching DX pad art.
-    const path = () => {
+    const path = (): void => {
       ctx.beginPath();
       for (let i = 0; i < 8; i++) {
-        const a = (i + 0.5) * (Math.PI / 4) - Math.PI / 2;
-        const px = CENTER + Math.cos(a) * r;
-        const py = CENTER + Math.sin(a) * r;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+        const ang = Math.PI / 2 + (i * Math.PI) / 4;
+        const p = toCanvas(r * Math.cos(ang), r * Math.sin(ang), CENTER, OUTER_R);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
       }
       ctx.closePath();
     };
 
     if (!labelsOnly) {
+      ctx.save();
+      ctx.globalAlpha = 0.5;
       if (style.glow > 0) {
-        ctx.save();
         ctx.shadowColor = style.stroke;
         ctx.shadowBlur = style.glow;
-        path();
-        ctx.fillStyle = style.fill;
-        ctx.fill();
-        ctx.restore();
-      } else {
-        path();
-        ctx.fillStyle = style.fill;
-        ctx.fill();
       }
-
       path();
-      ctx.strokeStyle = style.stroke;
-      ctx.lineWidth = 2.5 * S;
+      ctx.fillStyle = style.fill;
+      ctx.fill();
+      ctx.restore();
+      path();
+      ctx.strokeStyle = COLORS.padStroke;
+      ctx.globalAlpha = 0.9;
       ctx.stroke();
-
-      // Visual C1 (right) / C2 (left) split
+      ctx.globalAlpha = 1;
+      const top = toCanvas(0, r, CENTER, OUTER_R);
+      const bot = toCanvas(0, -r, CENTER, OUTER_R);
       ctx.beginPath();
-      ctx.moveTo(CENTER, CENTER - r * 0.92);
-      ctx.lineTo(CENTER, CENTER + r * 0.92);
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(bot.x, bot.y);
       ctx.strokeStyle = COLORS.cSplit;
-      ctx.lineWidth = 1.5 * S;
       ctx.stroke();
       return;
     }
 
+    const c1 = toCanvas(r * 0.42, 0, CENTER, OUTER_R);
+    const c2 = toCanvas(-r * 0.42, 0, CENTER, OUTER_R);
     ctx.font = `700 ${Math.round(14 * S)}px 'IBM Plex Mono', monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -461,8 +459,8 @@ export class RingDisplay {
     ctx.shadowBlur = 4 * S;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
-    ctx.fillText("C1", CENTER + r * 0.42, CENTER);
-    ctx.fillText("C2", CENTER - r * 0.42, CENTER);
+    ctx.fillText("C1", c1.x, c1.y);
+    ctx.fillText("C2", c2.x, c2.y);
     ctx.shadowBlur = 0;
   }
 

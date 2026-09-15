@@ -22,7 +22,10 @@ export class ArcadeScene {
   private resizeObserver: ResizeObserver;
   private aimSensor: string | null = "A5";
   private activeNotes: ActiveNote[] = [];
-  private readonly _aimWorld = new THREE.Vector3();
+  private handL: string | null = null;
+  private handR: string | null = null;
+  private readonly _leftAim = new THREE.Vector3();
+  private readonly _rightAim = new THREE.Vector3();
   private readonly _normal = new THREE.Vector3();
   private readonly _lookAt = new THREE.Vector3();
   private readonly _leftIdle = new THREE.Vector3();
@@ -116,6 +119,11 @@ export class ArcadeScene {
     this.activeNotes = notes;
   }
 
+  setHandSensors(left: string | null, right: string | null): void {
+    this.handL = left;
+    this.handR = right;
+  }
+
   setAimSensor(sensor: string | null): void {
     this.aimSensor = sensor;
     if (sensor) this.fly.setAimSensor(sensor);
@@ -155,50 +163,29 @@ export class ArcadeScene {
     this.fly.setScreenNormal(this._normal);
   }
 
-  /** Continuous tip target from the most urgent active note / slide. */
-  private tipUnitXY(): { x: number; y: number } | null {
-    const notes = this.activeNotes;
-    if (notes.length === 0) {
-      if (!this.aimSensor) return null;
-      return sensorXY(this.aimSensor);
-    }
+  /** Both foreleg targets from decoder-assigned sensors. */
+  private tipPair(): { left: { x: number; y: number }; right: { x: number; y: number } } {
+    const left = this.handContact(this.handL) ?? this.handContact(this.aimSensor);
+    const right = this.handContact(this.handR);
+    const idleL = sensorXY("A4");
+    const idleR = sensorXY("A5");
+    return {
+      left: left ?? idleL,
+      right: right ?? (left && !this.handR ? left : idleR),
+    };
+  }
 
-    // Prefer slides in travel, then nearest-to-hit notes.
-    let best: ActiveNote | null = null;
-    let bestScore = -Infinity;
-    for (const note of notes) {
-      const progress = Math.min(1, Math.max(0, note.progress));
-      const isSlide = note.type === "slide" && (note.path?.length ?? 0) > 1;
-      const score = isSlide
-        ? 100 + progress
-        : progress >= 0.85
-          ? 80 + progress
-          : progress;
-      if (score > bestScore) {
-        bestScore = score;
-        best = note;
-      }
-    }
-    if (!best) {
-      return this.aimSensor ? sensorXY(this.aimSensor) : null;
-    }
-
-    if (best.type === "slide" && best.path && best.path.length > 1) {
-      const raw = Math.min(1, Math.max(0, best.progress));
-      if (raw < 0.5) {
-        const head = sensorXY(best.path[0]);
-        const u = raw / 0.5;
-        return { x: head.x * u, y: head.y * u };
-      }
-      return pathPoint(best.path, (raw - 0.5) / 0.5);
-    }
-
-    const sensor = best.sensor ?? this.aimSensor;
+  private handContact(sensor: string | null): { x: number; y: number } | null {
     if (!sensor) return null;
-    const target = sensorXY(sensor);
-    const progress = Math.min(1, Math.max(0, best.progress));
-    // Ease toward the pad as the note arrives (not a hard teleport).
-    return { x: target.x * progress, y: target.y * progress };
+    const slide = this.activeNotes.find(
+      (n) =>
+        n.type === "slide" &&
+        n.path != null &&
+        n.path.length > 1 &&
+        (n.sensor === sensor || n.path.includes(sensor)),
+    );
+    if (slide) return slideTipXY(slide);
+    return sensorXY(sensor);
   }
 
   /** Default 3/4 view from behind-right, looking over the fly at the playfield. */
@@ -226,13 +213,25 @@ export class ArcadeScene {
     this.cabinet.setButtonStates(this.ring.getAButtonStates(performance.now()));
     this.syncFlyContacts();
 
-    let aimWorld: THREE.Vector3 | null = null;
-    const tip = this.tipUnitXY();
-    if (tip) {
-      aimWorld = this.cabinet.sensorWorldPos(tip.x, tip.y, this._aimWorld);
-    }
-    this.fly.update(this.pose, elapsed, aimWorld);
+    const pair = this.tipPair();
+    this.cabinet.sensorWorldPos(pair.left.x, pair.left.y, this._leftAim);
+    this.cabinet.sensorWorldPos(pair.right.x, pair.right.y, this._rightAim);
+    this.fly.update(this.pose, elapsed, this._leftAim, this._rightAim);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
+}
+
+function slideTipXY(note: ActiveNote): { x: number; y: number } {
+  const path = note.path;
+  if (!path || path.length < 2) {
+    return sensorXY(note.sensor ?? path?.[0] ?? "C");
+  }
+  const raw = Math.min(1, Math.max(0, note.progress));
+  if (raw < 0.5) {
+    const head = sensorXY(path[0]);
+    const u = raw / 0.5;
+    return { x: head.x * u, y: head.y * u };
+  }
+  return pathPoint(path, (raw - 0.5) / 0.5);
 }

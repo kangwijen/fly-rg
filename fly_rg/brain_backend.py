@@ -95,15 +95,14 @@ class MockBrain:
         # Descending "readout": steer toward stronger chase/loom side; tap from threat.
         left = drive.get("loomL", 0.0) + drive.get("chaseL", 0.0) + drive.get("threatL", 0.0)
         right = drive.get("loomR", 0.0) + drive.get("chaseR", 0.0) + drive.get("threatR", 0.0)
-        if left > right and left > 0.05:
+        if left > 0.05:
             fired.extend(self.cells(["DNa02"], "L")[: 1 + int(left > 0.4)])
-        elif right > left and right > 0.05:
+        if right > 0.05:
             fired.extend(self.cells(["DNa02"], "R")[: 1 + int(right > 0.4)])
-        threat = max(drive.get("threatL", 0.0), drive.get("threatR", 0.0))
-        loom = max(drive.get("loomL", 0.0), drive.get("loomR", 0.0))
-        if threat + loom > 0.55:
-            side = "L" if left >= right else "R"
-            fired.extend(self.cells(["DNp01"], side)[:2])
+        if drive.get("threatL", 0.0) + drive.get("loomL", 0.0) > 0.55:
+            fired.extend(self.cells(["DNp01"], "L")[:2])
+        if drive.get("threatR", 0.0) + drive.get("loomR", 0.0) > 0.55:
+            fired.extend(self.cells(["DNp01"], "R")[:2])
 
         # Tiny spontaneous noise keyed by step for determinism.
         if (self._step_i + self.seed) % 17 == 0:

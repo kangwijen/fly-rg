@@ -64,6 +64,8 @@ export interface Drive {
 export interface Pose {
   aim: number;
   strike: number;
+  strike_l?: number;
+  strike_r?: number;
 }
 
 export interface HelloMessage {
@@ -95,6 +97,8 @@ export interface StateMessage {
   tap_button: number | null;
   aim_sensor?: string | null;
   tap_sensor?: string | null;
+  hand_l_sensor?: string | null;
+  hand_r_sensor?: string | null;
   score: Score;
   active: ActiveNote[];
   active_sensors?: string[];

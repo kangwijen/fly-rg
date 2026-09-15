@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from fly_rg.encoder import note_target_sensor
 from fly_rg.schema import Note
-from fly_rg.sensors import button_to_sensor, sensor_side, sensor_xy
+from fly_rg.sensors import RADIUS, button_to_sensor, sensor_side, sensor_xy
 
 # Aim sectors when DNa02 prefers left vs right (A-button indices).
 LEFT_BUTTONS = (8, 1, 2, 7)
@@ -36,6 +36,12 @@ class DecodeResult:
     tap_sensor: str | None
     aim: float  # -1..1
     strike: float  # 0..1
+    hand_l_sensor: str | None = None
+    hand_r_sensor: str | None = None
+    tap_l: bool = False
+    tap_r: bool = False
+    strike_l: float = 0.0
+    strike_r: float = 0.0
 
 
 def _as_index_set(indices: Any) -> set[int]:
@@ -74,18 +80,18 @@ class ActionDecoder:
         self.mock = mock
         self.rng = random.Random(seed)
         self._last_tap_t = -1e9
-        self._history: deque[tuple[int, int, int]] = deque(maxlen=STEER_WINDOW)
+        self._history: deque[tuple[int, int, int, int]] = deque(maxlen=STEER_WINDOW)
         self._dna02_l: set[int] = set()
         self._dna02_r: set[int] = set()
-        self._tap_idx: set[int] = set()
+        self._tap_l_idx: set[int] = set()
+        self._tap_r_idx: set[int] = set()
         self._brain = brain
         if brain is not None and not mock:
             tap_types = tap_types or ["DNp01"]
             self._dna02_l = _as_index_set(brain.cells(["DNa02"], "L"))
             self._dna02_r = _as_index_set(brain.cells(["DNa02"], "R"))
-            left = _as_index_set(brain.cells(tap_types, "L"))
-            right = _as_index_set(brain.cells(tap_types, "R"))
-            self._tap_idx = left | right
+            self._tap_l_idx = _as_index_set(brain.cells(tap_types, "L"))
+            self._tap_r_idx = _as_index_set(brain.cells(tap_types, "R"))
 
     def observe(self, fired: Any) -> None:
         if self.mock:
@@ -93,8 +99,9 @@ class ActionDecoder:
         fired_set = _as_index_set(fired)
         l = len(fired_set & self._dna02_l)
         r = len(fired_set & self._dna02_r)
-        tap = len(fired_set & self._tap_idx)
-        self._history.append((l, r, tap))
+        tap_l = len(fired_set & self._tap_l_idx)
+        tap_r = len(fired_set & self._tap_r_idx)
+        self._history.append((l, r, tap_l, tap_r))
 
     def decode(
         self,
@@ -112,16 +119,17 @@ class ActionDecoder:
             )
         return self._decode_spikes(now, notes, look_ahead_s, slide_next)
 
-    def _rates(self) -> tuple[float, float, float]:
+    def _rates(self) -> tuple[float, float, float, float]:
         if not self._history:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
         recent = list(self._history)
         steer = recent[-STEER_WINDOW:]
         tap_win = recent[-TAP_WINDOW:]
         l = sum(x[0] for x in steer)
         r = sum(x[1] for x in steer)
-        tap = sum(x[2] for x in tap_win)
-        return float(l), float(r), float(tap)
+        tap_l = sum(x[2] for x in tap_win)
+        tap_r = sum(x[3] for x in tap_win)
+        return float(l), float(r), float(tap_l), float(tap_r)
 
     def _active_targets(
         self,
@@ -134,8 +142,15 @@ class ActionDecoder:
         for i, note in enumerate(notes):
             nxt = 0 if slide_next is None else slide_next[i]
             sensor = note_target_sensor(note, slide_next=nxt)
-            if note.type == "slide" and note.slide is not None and nxt > 0:
-                if now <= note.slide.end_t:
+            if note.type == "slide" and note.slide is not None:
+                if nxt > 0 and now <= note.slide.end_t:
+                    out.append((note, sensor))
+                    continue
+                if 0.0 < (note.t - now) <= look_ahead_s:
+                    out.append((note, sensor))
+                continue
+            if note.type in ("hold", "touch_hold") and note.end is not None:
+                if note.t - look_ahead_s <= now <= note.end:
                     out.append((note, sensor))
                 continue
             if 0.0 < (note.t - now) <= look_ahead_s:
@@ -149,7 +164,7 @@ class ActionDecoder:
         look_ahead_s: float,
         slide_next: list[int] | None,
     ) -> DecodeResult:
-        l, r, tap_count = self._rates()
+        l, r, tap_l_count, tap_r_count = self._rates()
         diff = r - l
         if abs(diff) < STEER_MARGIN:
             aim = 0.0
@@ -162,19 +177,31 @@ class ActionDecoder:
             prefer = LEFT_BUTTONS
 
         active = self._active_targets(now, notes, look_ahead_s, slide_next)
-        aim_sensor = _pick_aim_sensor(aim, prefer, active)
+        hand_l, hand_r = _assign_hands(aim, l, r, active)
+        aim_sensor = hand_r if (prefer is RIGHT_BUTTONS and hand_r) else (
+            hand_l if hand_l else hand_r
+        )
+        if aim_sensor is None:
+            aim_sensor = _pick_aim_sensor(aim, prefer, active)
         aim_button = _sensor_to_button(aim_sensor)
 
-        want_tap = tap_count >= TAP_SPIKES
-        tap = False
+        cooldown_ok = (now - self._last_tap_t) >= TAP_COOLDOWN_S
+        tap_l = cooldown_ok and tap_l_count >= TAP_SPIKES and hand_l is not None
+        tap_r = cooldown_ok and tap_r_count >= TAP_SPIKES and hand_r is not None
+        tap = tap_l or tap_r
         tap_sensor: str | None = None
-        strike = min(1.0, tap_count / max(TAP_SPIKES, 1))
-        if want_tap and (now - self._last_tap_t) >= TAP_COOLDOWN_S:
-            tap_sensor = _pick_tap_sensor(aim_sensor, prefer, active, aim)
-            if tap_sensor is not None:
-                tap = True
-                self._last_tap_t = now
-                strike = 1.0
+        if tap_l:
+            tap_sensor = hand_l
+        elif tap_r:
+            tap_sensor = hand_r
+        if tap:
+            self._last_tap_t = now
+        strike_l = min(1.0, tap_l_count / max(TAP_SPIKES, 1))
+        strike_r = min(1.0, tap_r_count / max(TAP_SPIKES, 1))
+        if tap_l:
+            strike_l = 1.0
+        if tap_r:
+            strike_r = 1.0
         return DecodeResult(
             aim_button=aim_button,
             tap=tap,
@@ -182,7 +209,13 @@ class ActionDecoder:
             aim_sensor=aim_sensor,
             tap_sensor=tap_sensor if tap else None,
             aim=aim,
-            strike=strike,
+            strike=max(strike_l, strike_r),
+            hand_l_sensor=hand_l,
+            hand_r_sensor=hand_r,
+            tap_l=tap_l,
+            tap_r=tap_r,
+            strike_l=strike_l,
+            strike_r=strike_r,
         )
 
     def _decode_mock(
@@ -208,7 +241,12 @@ class ActionDecoder:
             prefer = RIGHT_BUTTONS if aim >= 0 else LEFT_BUTTONS
 
         active = self._active_targets(now, notes, look_ahead_s, slide_next)
-        aim_sensor = _pick_aim_sensor(aim, prefer, active)
+        hand_l, hand_r = _assign_hands(aim, left_strength, right_strength, active)
+        aim_sensor = hand_r if (prefer is RIGHT_BUTTONS and hand_r) else (
+            hand_l if hand_l else hand_r
+        )
+        if aim_sensor is None:
+            aim_sensor = _pick_aim_sensor(aim, prefer, active)
         aim_button = _sensor_to_button(aim_sensor)
 
         inject_strength = max(
@@ -220,28 +258,38 @@ class ActionDecoder:
             float(drive.get("threatR", 0.0)),
         )
         tap = False
+        tap_l = False
+        tap_r = False
         tap_sensor: str | None = None
-        strike = min(1.0, inject_strength / 0.8)
+        strike_l = min(1.0, left_strength / 0.8)
+        strike_r = min(1.0, right_strength / 0.8)
         if (now - self._last_tap_t) >= TAP_COOLDOWN_S:
-            candidates: list[tuple[Note, str]] = []
+            in_window: list[tuple[Note, str]] = []
             for i, note in enumerate(notes):
                 nxt = 0 if slide_next is None else slide_next[i]
                 sensor = note_target_sensor(note, slide_next=nxt)
                 if note.type == "slide" and note.slide is not None and nxt > 0:
-                    # Keep pressing along the path while the slide is live.
                     if now <= note.slide.end_t:
-                        candidates.append((note, sensor))
+                        in_window.append((note, sensor))
                     continue
                 if abs(note.t - now) <= PERFECT_WINDOW_S:
-                    candidates.append((note, sensor))
-            if candidates:
-                chosen = _best_target_for_aim(candidates, aim_sensor, prefer, aim)
-                p = min(0.95, 0.35 + 0.8 * inject_strength)
-                if chosen is not None and self.rng.random() < p:
-                    tap = True
-                    tap_sensor = chosen[1]
-                    self._last_tap_t = now
-                    strike = 1.0
+                    in_window.append((note, sensor))
+            window_sensors = {s for _n, s in in_window}
+            p = min(0.95, 0.35 + 0.8 * inject_strength)
+            if hand_l and hand_l in window_sensors and left_strength > 0.05:
+                if self.rng.random() < p:
+                    tap_l = True
+            if hand_r and hand_r in window_sensors and right_strength > 0.05:
+                if self.rng.random() < p:
+                    tap_r = True
+            tap = tap_l or tap_r
+            if tap:
+                tap_sensor = hand_l if tap_l else hand_r
+                self._last_tap_t = now
+                if tap_l:
+                    strike_l = 1.0
+                if tap_r:
+                    strike_r = 1.0
         return DecodeResult(
             aim_button=aim_button,
             tap=tap,
@@ -249,15 +297,57 @@ class ActionDecoder:
             aim_sensor=aim_sensor,
             tap_sensor=tap_sensor if tap else None,
             aim=float(max(-1.0, min(1.0, aim))),
-            strike=float(strike),
+            strike=float(max(strike_l, strike_r)),
+            hand_l_sensor=hand_l,
+            hand_r_sensor=hand_r,
+            tap_l=tap_l,
+            tap_r=tap_r,
+            strike_l=float(strike_l),
+            strike_r=float(strike_r),
         )
 
 
 def _sensor_aim_score(sensor: str) -> float:
     """Map sensor to -1..1 lateral (cos of angle; +X right)."""
     x, _y = sensor_xy(sensor)
-    # Normalize roughly to -1..1 using ring radius.
-    return max(-1.0, min(1.0, x / 0.86))
+    return max(-1.0, min(1.0, x / max(RADIUS["A"], 1e-6)))
+
+
+HAND_ON = 0.05
+
+
+def _best_sensor(pool: list[tuple[Note, str]], aim: float) -> str | None:
+    if not pool:
+        return None
+    return min(pool, key=lambda ns: (ns[0].t, abs(_sensor_aim_score(ns[1]) - aim)))[1]
+
+
+def _assign_hands(
+    aim: float,
+    left_strength: float,
+    right_strength: float,
+    active: list[tuple[Note, str]],
+) -> tuple[str | None, str | None]:
+    """Place hands from L/R descending drive, not from a hardcoded x-sort."""
+    left_notes = [(n, s) for n, s in active if sensor_side(s) == "L"]
+    right_notes = [(n, s) for n, s in active if sensor_side(s) == "R"]
+    l_on = left_strength > HAND_ON
+    r_on = right_strength > HAND_ON
+    hand_l = _best_sensor(left_notes, aim) if l_on else None
+    hand_r = _best_sensor(right_notes, aim) if r_on else None
+    if l_on and r_on:
+        if hand_l is None and hand_r is not None:
+            hand_l = hand_r
+        elif hand_r is None and hand_l is not None:
+            hand_r = hand_l
+        elif hand_l is None and hand_r is None:
+            shared = _best_sensor(active, aim)
+            hand_l = hand_r = shared
+    elif l_on and hand_l is None:
+        hand_l = _best_sensor(active, aim)
+    elif r_on and hand_r is None:
+        hand_r = _best_sensor(active, aim)
+    return hand_l, hand_r
 
 
 def _pick_aim_sensor(

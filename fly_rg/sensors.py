@@ -14,12 +14,13 @@ from typing import Literal
 Area = Literal["A", "B", "C", "D", "E"]
 
 # Radii of zone centers (relative to outer playfield).
+# Outer ring is one band of 16 A/D wedges; E sits in the B-ring gaps.
 RADIUS = {
     "C": 0.0,
-    "B": 0.40,
-    "E": 0.58,
-    "A": 0.86,
-    "D": 0.86,
+    "B": 0.36,
+    "E": 0.54,
+    "A": 0.81,
+    "D": 0.81,
 }
 
 

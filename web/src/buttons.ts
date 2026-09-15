@@ -111,12 +111,7 @@ export class ButtonRing {
       );
       glow.position.z = DEPTH + 0.008;
 
-      const label = this.makeLabel(`A${i}`);
-      const lx = Math.cos(mid) * ((INNER_R + OUTER_R) * 0.5);
-      const ly = Math.sin(mid) * ((INNER_R + OUTER_R) * 0.5);
-      label.position.set(lx, ly, DEPTH + 0.02);
-
-      this.group.add(mesh, glow, label);
+      this.group.add(mesh, glow);
       this.pads.push({ mesh, mat, glow, glowMat, index: i });
     }
   }
@@ -166,33 +161,5 @@ export class ButtonRing {
         pad.mesh.position.z = 0;
       }
     }
-  }
-
-  private makeLabel(text: string): THREE.Sprite {
-    const c = document.createElement("canvas");
-    c.width = 128;
-    c.height = 64;
-    const ctx = c.getContext("2d");
-    if (ctx) {
-      ctx.clearRect(0, 0, 128, 64);
-      ctx.fillStyle = "rgba(8, 12, 20, 0.65)";
-      ctx.fillRect(24, 12, 80, 40);
-      ctx.fillStyle = "#e8f0fa";
-      ctx.font = "700 28px IBM Plex Mono, monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, 64, 34);
-    }
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    const mat = new THREE.SpriteMaterial({
-      map: tex,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    });
-    const spr = new THREE.Sprite(mat);
-    spr.scale.set(0.28, 0.14, 1);
-    return spr;
   }
 }

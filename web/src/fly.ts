@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import type { Pose } from "./protocol";
-import { buttonToSensor, sensorXY } from "./sensors";
 
 const LEG_LEN = 0.16;
 const PRESS_DEPTH = 0.022;
@@ -29,11 +28,11 @@ export class FruitFly {
   private rightTip = new THREE.Vector3();
   private tipInitialized = false;
   private hasContacts = false;
-  private aimSensor = "A5";
   private screenNormal = new THREE.Vector3(0, 0, 1);
   private readonly _dir = new THREE.Vector3();
   private readonly _mid = new THREE.Vector3();
-  private readonly _target = new THREE.Vector3();
+  private readonly _leftTarget = new THREE.Vector3();
+  private readonly _rightTarget = new THREE.Vector3();
   private lastElapsed = 0;
   private baseY = 0;
 
@@ -179,19 +178,20 @@ export class FruitFly {
     this.screenNormal.copy(normalWorld).normalize();
   }
 
-  setAimButton(button: number | null): void {
-    if (button == null) return;
-    this.aimSensor = buttonToSensor(Math.max(1, Math.min(8, button)));
-  }
+  setAimButton(_button: number | null): void {}
 
-  setAimSensor(sensor: string | null): void {
-    if (!sensor) return;
-    this.aimSensor = sensor;
-  }
+  setAimSensor(_sensor: string | null): void {}
 
-  update(pose: Pose, elapsed: number, aimWorld: THREE.Vector3 | null = null): void {
+  update(
+    pose: Pose,
+    elapsed: number,
+    leftWorld: THREE.Vector3 | null = null,
+    rightWorld: THREE.Vector3 | null = null,
+  ): void {
     const aim = Math.max(-1, Math.min(1, pose.aim));
     const strike = Math.max(0, Math.min(1, pose.strike));
+    const strikeL = Math.max(0, Math.min(1, pose.strike_l ?? strike));
+    const strikeR = Math.max(0, Math.min(1, pose.strike_r ?? strike));
     const dt = Math.min(0.05, Math.max(0, elapsed - this.lastElapsed));
     this.lastElapsed = elapsed;
     const alpha = 1 - Math.exp(-TIP_FOLLOW * dt);
@@ -213,31 +213,13 @@ export class FruitFly {
 
     this.group.updateWorldMatrix(true, false);
 
-    // Soft rest pose: tips ease back toward idle pads when nothing is aimed.
-    this.leftTip.lerp(this.leftIdle, alpha * 0.55);
-    this.rightTip.lerp(this.rightIdle, alpha * 0.55);
+    this._leftTarget.copy(leftWorld ?? this.leftIdle);
+    this._rightTarget.copy(rightWorld ?? this.rightIdle);
+    this._leftTarget.addScaledVector(this.screenNormal, -PRESS_DEPTH * strikeL);
+    this._rightTarget.addScaledVector(this.screenNormal, -PRESS_DEPTH * strikeR);
 
-    if (aimWorld) {
-      const pressLeft =
-        this.leftTip.distanceToSquared(aimWorld) <=
-        this.rightTip.distanceToSquared(aimWorld);
-
-      this._target.copy(aimWorld);
-      this._target.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike);
-
-      if (pressLeft) {
-        this.leftTip.lerp(this._target, alpha);
-        // Trailing tip follows a bit so the body doesn't look pinned.
-        this.rightTip.lerp(this.rightIdle, alpha * 0.35);
-      } else {
-        this.rightTip.lerp(this._target, alpha);
-        this.leftTip.lerp(this.leftIdle, alpha * 0.35);
-      }
-    } else if (strike > 0.01) {
-      const pressLeft = sensorXY(this.aimSensor).x > 0;
-      const tip = pressLeft ? this.leftTip : this.rightTip;
-      tip.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike * alpha);
-    }
+    this.leftTip.lerp(this._leftTarget, alpha);
+    this.rightTip.lerp(this._rightTarget, alpha);
 
     this.plantLeg(this.foreLeft, this.leftHip, this.leftTip);
     this.plantLeg(this.foreRight, this.rightHip, this.rightTip);

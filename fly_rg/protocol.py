@@ -37,6 +37,8 @@ def state_message(
     aim_sensor: str | None = None,
     tap_sensor: str | None = None,
     active_sensors: list[str] | None = None,
+    hand_l_sensor: str | None = None,
+    hand_r_sensor: str | None = None,
 ) -> dict[str, Any]:
     # aim_button / tap_button stay ints for A-sensors, else null.
     return {
@@ -47,6 +49,8 @@ def state_message(
         "tap": bool(tap),
         "tap_button": tap_button,
         "tap_sensor": tap_sensor,
+        "hand_l_sensor": hand_l_sensor,
+        "hand_r_sensor": hand_r_sensor,
         "score": score,
         "active": active,
         "active_sensors": list(active_sensors or []),
@@ -61,6 +65,8 @@ def state_message(
         "pose": {
             "aim": float(pose.get("aim", 0.0)),
             "strike": float(pose.get("strike", 0.0)),
+            "strike_l": float(pose.get("strike_l", pose.get("strike", 0.0))),
+            "strike_r": float(pose.get("strike_r", pose.get("strike", 0.0))),
         },
         "spikes": list(spikes or []),
         "spike_total": int(spike_total),
