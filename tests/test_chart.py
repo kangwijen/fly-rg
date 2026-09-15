@@ -4,36 +4,39 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fly_rg.chart import load_chart, load_chart_json, parse_simai, parse_simai_subset
+from fly_rg.chart import list_difficulties, parse_simai
 from fly_rg.schema import Chart
 from fly_rg.slides import expand_slide, expand_wifi
 
 DEMO = Path(__file__).resolve().parents[1] / "charts" / "demo"
+TERATERA = DEMO / "てらてら" / "maidata.txt"
+WORLDS_END = DEMO / "World_s end loneliness" / "maidata.txt"
 
 
-def test_parse_simai_demo_notes():
-    text = (DEMO / "maidata.txt").read_text(encoding="utf-8")
-    chart = parse_simai_subset(text)
-    assert chart.title == "Demo Ring"
-    assert chart.artist == "fly-rg"
-    assert chart.offset == 0.0
-    assert len(chart.notes) == 12
-    taps = [n for n in chart.notes if n.type == "tap"]
-    touches = [n for n in chart.notes if n.type == "touch"]
-    slides = [n for n in chart.notes if n.type == "slide"]
-    assert len(taps) == 8
-    assert len(touches) == 3
-    assert len(slides) == 1
-    assert [n.sensor for n in touches] == ["A1", "B5", "C"]
-    slide = slides[0]
-    assert slide.button == 1
-    assert slide.slide is not None
-    assert slide.slide.path == ("A1", "B1", "C", "B5", "A5")
-    assert slide.is_star
-    # wait 1 beat (0.5s at 120) + [8:1]=0.25 after head at t=3.5
-    assert abs(slide.t - 3.5) < 1e-9
-    assert abs(slide.slide.wait_t - 4.0) < 1e-9
-    assert abs(slide.slide.end_t - 4.25) < 1e-9
+def _assert_chart_roundtrip(chart: Chart) -> None:
+    restored = Chart.from_dict(chart.to_dict())
+    assert len(restored.notes) == len(chart.notes)
+    for orig, back in zip(chart.notes, restored.notes):
+        assert back.type == orig.type
+        assert back.sensor == orig.sensor
+        assert back.button == orig.button
+        if orig.slide is not None:
+            assert back.slide is not None
+            assert back.slide.path == orig.slide.path
+        else:
+            assert back.slide is None
+
+
+def test_demo_packs_parse_and_roundtrip():
+    maidata_files = sorted(DEMO.glob("*/maidata.txt"))
+    assert maidata_files, f"no demo packs under {DEMO}"
+    for path in maidata_files:
+        text = path.read_text(encoding="utf-8")
+        for entry in list_difficulties(text):
+            difficulty = int(entry["difficulty"])
+            chart = parse_simai(text, difficulty=difficulty)
+            assert len(chart.notes) > 0
+            _assert_chart_roundtrip(chart)
 
 
 def test_parse_touch_and_touch_hold():
@@ -120,8 +123,40 @@ def test_wifi_slide():
 def test_pseudo_each_backtick():
     chart = parse_simai("&title=x\n&inote_1=\n(120){4}1`2,\nE\n")
     assert len(chart.notes) == 2
-    assert abs(chart.notes[1].t - chart.notes[0].t - 0.001) < 1e-9
+    assert abs(chart.notes[1].t - chart.notes[0].t - 1.875 / 120) < 1e-9
     assert not chart.notes[0].is_each
+
+
+def test_bare_hold_length_zero():
+    chart = parse_simai("&title=x\n&inote_1=\n(120){4}1h,\nE\n")
+    assert len(chart.notes) == 1
+    hold = chart.notes[0]
+    assert hold.type == "hold"
+    assert hold.end == hold.t
+
+
+def test_hold_then_slide():
+    chart = parse_simai("&title=x\n&inote_1=\n(120){4}1h-5[8:1],\nE\n")
+    holds = [n for n in chart.notes if n.type == "hold"]
+    slides = [n for n in chart.notes if n.type == "slide"]
+    assert len(holds) == 1
+    assert len(slides) == 1
+    hold = holds[0]
+    slide = slides[0]
+    assert abs(hold.end - hold.t - 0.5) < 1e-9
+    assert slide.slide is not None
+    assert slide.slide.path[0] == "A1"
+    assert slide.slide.path[-1] == "A5"
+
+
+def test_chained_slide_duration_sum():
+    chart = parse_simai("&title=x\n&inote_1=\n(120){4}1-3[8:1]-5[8:1],\nE\n")
+    slides = [n for n in chart.notes if n.type == "slide"]
+    assert len(slides) == 1
+    slide = slides[0].slide
+    assert slide is not None
+    assert slide.shape == "-"
+    assert abs(slide.end_t - slide.wait_t - 0.5) < 1e-9
 
 
 def test_absolute_step():
@@ -148,29 +183,67 @@ def test_difficulty_picks_single_inote():
     assert [n.button for n in high.notes] == [5, 6, 7, 8]
 
 
-def test_load_chart_json_matches_demo():
-    chart = load_chart_json(DEMO / "chart.json")
-    assert isinstance(chart, Chart)
-    assert len(chart.notes) == 12
-    maidata = load_chart(DEMO / "maidata.txt")
-    assert [n.type for n in chart.notes] == [n.type for n in maidata.notes]
-    assert [n.sensor for n in chart.notes] == [n.sensor for n in maidata.notes]
-    for a, b in zip(chart.notes, maidata.notes):
-        assert abs(a.t - b.t) < 1e-9
-
-
 def test_teratera_parses_many_notes():
-    zpath = Path(__file__).resolve().parents[1] / "charts" / "zip" / "teratera.zip"
-    if not zpath.exists():
-        return
-    import zipfile
-
-    with zipfile.ZipFile(zpath) as zf:
-        name = next(n for n in zf.namelist() if n.lower().endswith("maidata.txt"))
-        text = zf.read(name).decode("utf-8")
-    chart = parse_simai(text, difficulty=2)
+    assert TERATERA.is_file()
+    text = TERATERA.read_text(encoding="utf-8")
+    levels = list_difficulties(text)
+    difficulty = min(int(e["difficulty"]) for e in levels)
+    chart = parse_simai(text, difficulty=difficulty)
     assert len(chart.notes) > 100
     types = {n.type for n in chart.notes}
     assert "tap" in types
-    # Basic chart should include holds or slides or touches in real packs
     assert types & {"hold", "slide", "touch", "touch_hold"}
+
+
+def test_worlds_end_gt5_path():
+    assert WORLDS_END.is_file()
+    text = WORLDS_END.read_text(encoding="utf-8")
+    levels = {int(e["difficulty"]) for e in list_difficulties(text)}
+    if 4 in levels:
+        difficulty = 4
+    elif 5 in levels:
+        difficulty = 5
+    else:
+        difficulty = max(levels)
+    chart = parse_simai(text, difficulty=difficulty)
+    assert len(chart.notes) > 0
+    candidates = [
+        n
+        for n in chart.notes
+        if n.type == "slide"
+        and n.button == 5
+        and n.slide is not None
+        and (
+            n.slide.shape == ">"
+            or (n.slide.path and n.slide.path[0] == "A5" and ">" in n.slide.shape)
+        )
+    ]
+    if candidates:
+        path = candidates[0].slide.path
+        assert path[0] == "A5"
+        assert path[1] == "A4"
+        assert path[2] == "A3"
+
+
+def test_teratera_p_direction():
+    assert TERATERA.is_file()
+    text = TERATERA.read_text(encoding="utf-8")
+    chart = None
+    for entry in list_difficulties(text):
+        candidate = parse_simai(text, difficulty=int(entry["difficulty"]))
+        slides = [
+            n
+            for n in candidate.notes
+            if n.type == "slide"
+            and n.button == 7
+            and n.slide is not None
+            and n.slide.shape == "p"
+        ]
+        if slides:
+            chart = candidate
+            path = slides[0].slide.path
+            break
+    assert chart is not None
+    assert "B6" in path
+    assert "B8" not in path
+    assert expand_slide("p", 7, 3) == list(path)

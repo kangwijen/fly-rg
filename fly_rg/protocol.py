@@ -12,14 +12,24 @@ def hello_message(version: int = 1) -> dict[str, Any]:
     return {"type": "hello", "version": version}
 
 
-def chart_message(chart: Chart) -> dict[str, Any]:
+def chart_message(
+    chart: Chart,
+    *,
+    active: list | None = None,
+    active_sensors: list | None = None,
+) -> dict[str, Any]:
     d = chart.to_dict()
-    return {
+    msg: dict[str, Any] = {
         "type": "chart",
         "title": d["title"],
         "artist": d["artist"],
         "notes": d["notes"],
     }
+    if active is not None:
+        msg["active"] = active
+    if active_sensors is not None:
+        msg["active_sensors"] = active_sensors
+    return msg
 
 
 def state_message(

@@ -11,7 +11,7 @@ from fly_rg.decoder import TAP_COOLDOWN_S, V_MAX, ActionDecoder
 from fly_rg.encoder import NoteEncoder
 from fly_rg.judge import Judge
 from fly_rg.play import _contact_sensors
-from fly_rg.schema import Note
+from fly_rg.schema import Note, SlideInfo
 from fly_rg.sensors import nearest_sensor, sensor_xy
 
 DT = 0.004
@@ -331,6 +331,84 @@ def test_hold_contact_keeps_strike_while_on_pad():
     assert result.hand_l_sensor == "A5"
     assert result.strike_l == pytest.approx(1.0)
     assert not result.tap_l
+
+
+def test_mid_song_gap_does_not_drift_to_rest_homes():
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    enc = NoteEncoder(mock=True)
+    notes = [
+        Note(t=1.0, button=5, type="tap", sensor="A5"),
+        Note(t=10.0, button=1, type="tap", sensor="A1"),
+    ]
+    dec.x_l, dec.y_l = sensor_xy("B5")
+    dec.x_r, dec.y_r = sensor_xy("B1")
+    a6 = sensor_xy("A6")
+    a3 = sensor_xy("A3")
+    dist_l0 = math.hypot(dec.hand_l[0] - a6[0], dec.hand_l[1] - a6[1])
+    dist_r0 = math.hypot(dec.hand_r[0] - a3[0], dec.hand_r[1] - a3[1])
+    now = 5.0
+    for _ in range(120):
+        enc_r = enc.encode(
+            notes,
+            now,
+            look_ahead_s=1.0,
+            dt=DT,
+            hand_l=dec.hand_l,
+            hand_r=dec.hand_r,
+        )
+        assert enc_r.drive["growthL"] == 0.0
+        assert enc_r.drive["growthR"] == 0.0
+        _motor(dec, brain, enc_r.drive, now)
+        now += DT
+    dist_l1 = math.hypot(dec.hand_l[0] - a6[0], dec.hand_l[1] - a6[1])
+    dist_r1 = math.hypot(dec.hand_r[0] - a3[0], dec.hand_r[1] - a3[1])
+    assert dist_l1 >= dist_l0 - 0.02
+    assert dist_r1 >= dist_r0 - 0.02
+
+
+def test_slide_abc_follow_crosses_center_after_b5():
+    notes = [
+        Note(
+            t=1.0,
+            button=5,
+            type="slide",
+            sensor="A5",
+            slide=SlideInfo(
+                shape="-",
+                end_sensor="C",
+                path=("A5", "B5", "C"),
+                wait_t=1.0,
+                end_t=2.0,
+            ),
+        )
+    ]
+    enc = NoteEncoder(mock=True)
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    judge = Judge(notes)
+    dec.x_l, dec.y_l = sensor_xy("B5")
+    dec.x_r, dec.y_r = sensor_xy("A3")
+    judge.slide_next[0] = 1
+    now = 1.05
+    r_trace: list[float] = []
+    while now <= 2.05:
+        enc_r = enc.encode(
+            notes,
+            now,
+            look_ahead_s=1.0,
+            dt=DT,
+            slide_next=judge.slide_next,
+            hand_l=dec.hand_l,
+            hand_r=dec.hand_r,
+        )
+        occ_l = nearest_sensor(*dec.hand_l)
+        if enc_r.target_l is not None and occ_l == enc_r.target_l:
+            judge.press(occ_l, now)
+        _motor(dec, brain, enc_r.drive, now)
+        r_trace.append(math.hypot(*dec.hand_l))
+        now += DT
+    assert min(r_trace[-40:]) < min(r_trace[:20]) - 0.05
 
 
 def test_glide_a8_to_a4_crosses_interior():

@@ -17,10 +17,6 @@ from fly_rg.schema import Chart, HeadStyle, Note, SlideInfo
 from fly_rg.sensors import button_to_sensor, format_sensor
 from fly_rg.slides import expand_slide, expand_wifi
 
-_PSEUDO_HOLD = 1280  # short-form hold length divider (official fan book)
-_PSEUDO_EACH_DT = 0.001
-
-
 def load_chart_json(path: str | Path) -> Chart:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return Chart.from_dict(data)
@@ -141,7 +137,8 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
             pos += 1
             continue
         if ch == "`":
-            t += _PSEUDO_EACH_DT
+            if bpm > 0:
+                t += 1.875 / bpm
             pos += 1
             continue
         if ch == "/":
@@ -249,7 +246,7 @@ def _parse_duration(spec: str, *, bpm: float) -> float:
     """Parse [..] duration bodies into seconds."""
     spec = spec.strip()
     if not spec:
-        return (60.0 / max(bpm, 1e-9)) * (4.0 / _PSEUDO_HOLD)
+        return 0.0
 
     # [time##...] absolute wait handled by caller for slides; here duration only.
     if "##" in spec:
@@ -450,7 +447,7 @@ def _parse_note_token_inner(
         pos += 1
         more, pos = _take_flags(token, pos)
         flags |= more
-        dur = _parse_duration("", bpm=bpm)
+        dur: float | None = None
         if pos < len(token) and token[pos] == "[":
             close = token.find("]", pos)
             if close < 0:
@@ -459,8 +456,13 @@ def _parse_note_token_inner(
             pos = close + 1
             more, pos = _take_flags(token, pos)
             flags |= more
+        slide_follows = pos < len(token) and (
+            token[pos] in "-><^vVpPqQsSzZw*" or token[pos] in "@?!"
+        )
+        if dur is None:
+            dur = beat_seconds() if slide_follows else 0.0
         br, ex, mine, hanabi, star, head = _flags_to_style(flags)
-        return [
+        out: list[Note] = [
             Note(
                 t=t,
                 button=button,
@@ -475,6 +477,13 @@ def _parse_note_token_inner(
                 head_style=head,
             )
         ]
+        if slide_follows:
+            out.extend(
+                _parse_slides(
+                    button, token, pos, t, flags, bpm=bpm, beat_seconds=beat_seconds
+                )
+            )
+        return out
 
     # Slide if shape follows (or * chain / @?! already in flags)
     if pos < len(token) and (
@@ -680,7 +689,7 @@ def _parse_slides(
                     _slide_note(
                         t,
                         start_button,
-                        "".join(shapes),
+                        shapes[0],
                         path,
                         wait_t,
                         end_t,
@@ -698,7 +707,7 @@ def _parse_slides(
         shapes = []
         cur = start_button
         total_wait = t + beat_seconds()
-        total_end = total_wait
+        total_motion = 0.0
         for shape, mid, end_b, dur_spec in segs:
             shapes.append(shape if mid is None else f"V{mid}")
             if dur_spec is None:
@@ -706,11 +715,9 @@ def _parse_slides(
             wait_t, end_t = _parse_slide_timing(
                 dur_spec, bpm=bpm, note_t=t, beat_seconds=beat_seconds()
             )
-            # For multi-duration chains, movement is continuous; use first wait
-            # and last end.
             if not path:
                 total_wait = wait_t
-            total_end = end_t
+            total_motion += end_t - wait_t
             if shape == "w":
                 for wp in expand_wifi(cur):
                     out.append(
@@ -741,10 +748,10 @@ def _parse_slides(
                 _slide_note(
                     t,
                     start_button,
-                    "".join(shapes),
+                    shapes[0],
                     path,
                     total_wait,
-                    total_end,
+                    total_wait + total_motion,
                     br,
                     ex,
                     mine,

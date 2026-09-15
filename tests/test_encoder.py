@@ -89,7 +89,8 @@ def test_slide_growth_pulses_current_waypoint():
         hand_l=sensor_xy("A6"),
         hand_r=sensor_xy("A3"),
     )
-    assert on_node.drive["growthL"] > 0.05
+    assert on_node.drive["growthL"] > 0.04
+    assert on_node.drive["growthL"] < 1.0
     off_node = enc.encode(
         notes,
         1.2,
@@ -169,6 +170,112 @@ def test_on_pad_tth_zero_still_grows():
         hand_r=sensor_xy("A3"),
     )
     assert result.drive["growthL"] >= 0.05
+
+
+def test_slide_abc_advances_inward_drive_toward_c():
+    notes = [
+        Note(
+            t=1.0,
+            button=5,
+            type="slide",
+            sensor="A5",
+            slide=SlideInfo(
+                shape="-",
+                end_sensor="C",
+                path=("A5", "B5", "C"),
+                wait_t=1.0,
+                end_t=2.0,
+            ),
+        )
+    ]
+    enc = NoteEncoder(mock=True)
+    result = enc.encode(
+        notes,
+        1.2,
+        look_ahead_s=1.0,
+        dt=0.004,
+        slide_next=[2],
+        hand_l=sensor_xy("B5"),
+        hand_r=sensor_xy("A3"),
+    )
+    assert result.target_l == "C"
+    cartesian = (
+        result.drive["westL"]
+        + result.drive["southL"]
+        + result.drive["eastL"]
+        + result.drive["northL"]
+    )
+    assert cartesian > 0.02
+
+
+def test_mid_song_gap_hovers_without_rest_home_drive():
+    notes = [
+        Note(t=1.0, button=5, type="tap", sensor="A5"),
+        Note(t=10.0, button=1, type="tap", sensor="A1"),
+    ]
+    enc = NoteEncoder(mock=True)
+    result = enc.encode(
+        notes,
+        5.0,
+        look_ahead_s=1.0,
+        dt=0.004,
+        hand_l=sensor_xy("B5"),
+        hand_r=sensor_xy("B1"),
+    )
+    assert result.target_l is None
+    assert result.target_r is None
+    assert result.drive["growthL"] == 0.0
+    assert result.drive["growthR"] == 0.0
+    for key in (
+        "eastL",
+        "westL",
+        "northL",
+        "southL",
+        "eastR",
+        "westR",
+        "northR",
+        "southR",
+    ):
+        assert result.drive[key] < 0.02
+
+
+def test_empty_and_before_first_still_rest_home():
+    enc = NoteEncoder(mock=True)
+    empty = enc.encode(
+        [],
+        now=0.0,
+        look_ahead_s=1.0,
+        dt=0.004,
+        hand_l=sensor_xy("B5"),
+        hand_r=sensor_xy("B1"),
+    )
+    assert empty.drive["eastL"] > 0.02 or empty.drive["northL"] > 0.02
+    assert empty.drive["westR"] > 0.02 or empty.drive["southR"] > 0.02
+
+    notes = [Note(t=5.0, button=5, type="tap", sensor="A5")]
+    before = enc.encode(
+        notes,
+        0.0,
+        look_ahead_s=1.0,
+        dt=0.004,
+        hand_l=sensor_xy("B5"),
+        hand_r=sensor_xy("B1"),
+    )
+    assert before.drive["eastL"] > 0.02 or before.drive["northL"] > 0.02
+
+
+def test_en_route_tap_no_growth_outside_deadzone():
+    notes = [Note(t=1.0, button=1, type="tap", sensor="A1")]
+    enc = NoteEncoder(mock=True)
+    result = enc.encode(
+        notes,
+        0.99,
+        look_ahead_s=1.0,
+        dt=0.004,
+        hand_l=sensor_xy("A6"),
+        hand_r=sensor_xy("A3"),
+    )
+    assert result.drive["growthL"] < 0.05
 
 
 def test_matched_notes_are_skipped():

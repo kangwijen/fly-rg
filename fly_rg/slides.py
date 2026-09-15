@@ -19,6 +19,10 @@ def _next_button(button: int, *, clockwise: bool) -> int:
     return 8 if button == 1 else button - 1
 
 
+def _wrap_button(button: int, delta: int) -> int:
+    return (button - 1 + delta) % 8 + 1
+
+
 def _cw_dist(start: int, end: int) -> int:
     return (end - start) % 8
 
@@ -46,6 +50,25 @@ def _short_clockwise(start: int, end: int) -> bool:
     if start == end:
         return True
     return _cw_dist(start, end) <= _cw_dist(end, start)
+
+
+def _simai_ring_cw(start: int, end: int, glyph: str) -> bool:
+    """Ring direction for > < ^ per SimaiSharp DetermineRingType."""
+    start_index = start - 1
+    end_index = end - 1
+    if glyph == ">":
+        return (start_index + 2) % 8 < 4
+    if glyph == "<":
+        gt_cw = (start_index + 2) % 8 < 4
+        return not gt_cw
+    if glyph == "^":
+        difference = end_index - start_index
+        if difference >= 0:
+            rotation = -1 if difference > 4 else 1
+        else:
+            rotation = 1 if difference < -4 else -1
+        return rotation > 0
+    raise ValueError(f"_simai_ring_cw does not support glyph {glyph!r}")
 
 
 def _a(btn: int) -> str:
@@ -77,7 +100,7 @@ def _straight_path(start: int, end: int) -> list[str]:
 
 
 def _edge_path(start: int, end: int, *, clockwise: bool) -> list[str]:
-    """Edge (< >): walk outer A sensors only."""
+    """Edge (< > ^): walk outer A sensors only."""
     return [_a(b) for b in _arc_buttons(start, end, clockwise=clockwise)]
 
 
@@ -93,19 +116,6 @@ def _grand_v(start: int, mid: int, end: int) -> list[str]:
     first = _straight_path(start, mid)
     second = _straight_path(mid, end)
     return first + second[1:]
-
-
-def _caret_path(start: int, end: int) -> list[str]:
-    """^ short arc along the rim with B insets."""
-    cw = _short_clockwise(start, end)
-    buttons = _arc_buttons(start, end, clockwise=cw)
-    if len(buttons) <= 2:
-        return [_a(buttons[0]), _a(buttons[-1])]
-    path = [_a(buttons[0])]
-    for b in buttons[1:-1]:
-        path.append(_b(b))
-    path.append(_a(buttons[-1]))
-    return path
 
 
 def _inner_loop(start: int, end: int, *, clockwise: bool) -> list[str]:
@@ -156,45 +166,49 @@ def _outer_loop(start: int, end: int, *, clockwise: bool) -> list[str]:
 
 
 def _thunder(start: int, end: int, *, mirror: bool) -> list[str]:
-    """s / z zigzag. Example z5: A1, B8, B7, C, B3, B4, A5."""
+    """s / z zigzag. Example z 1->5: A1, B8, B7, C, B3, B4, A5."""
     if start == end:
         raise ValueError("thunder slide requires distinct start and end")
-    # Flip side relative to start.
-    left = not mirror
-    b1 = _next_button(start, clockwise=left)
-    b2 = _next_button(b1, clockwise=left)
-    b3 = _next_button(end, clockwise=not left)
-    b4 = _next_button(b3, clockwise=not left)
+    if mirror:
+        return [
+            _a(start),
+            _b(_wrap_button(start, -1)),
+            _b(_wrap_button(start, -2)),
+            "C",
+            _b(_wrap_button(end, -2)),
+            _b(_wrap_button(end, -1)),
+            _a(end),
+        ]
     return [
         _a(start),
-        _b(b1),
-        _b(b2),
+        _b(_wrap_button(start, 1)),
+        _b(_wrap_button(start, 2)),
         "C",
-        _b(b4),
-        _b(b3),
+        _b(_wrap_button(end, 2)),
+        _b(_wrap_button(end, 1)),
         _a(end),
     ]
 
 
 def _wifi_paths(start: int) -> list[list[str]]:
     """Fan/wifi (w): three tails L / C / R from the head button."""
-    # From guide for A1:
-    #   L: A1, B8, B7, A6/D6
-    #   C: A1, B1, C, B5/A5
-    #   R: A1, B2, B3, A4/D4
-    bl = _next_button(start, clockwise=False)
-    bl2 = _next_button(bl, clockwise=False)
-    br = _next_button(start, clockwise=True)
-    br2 = _next_button(br, clockwise=True)
-    end_l = _next_button(bl2, clockwise=False)  # start-3
-    end_c = _next_button(_next_button(_next_button(start, clockwise=True), clockwise=True), clockwise=True)
-    end_c = (start + 3 - 1) % 8 + 1  # opposite-ish (+4 for true opposite)
-    end_c = (start + 4 - 1) % 8 + 1
-    end_r = _next_button(br2, clockwise=True)  # start+3
+    end_l = _wrap_button(start, -3)
+    end_c = _wrap_button(start, 4)
+    end_r = _wrap_button(start, 3)
 
-    left = [_a(start), _b(bl), _b(bl2), _a(end_l)]
+    left = [
+        _a(start),
+        _b(_wrap_button(start, -1)),
+        _b(_wrap_button(start, -2)),
+        _a(end_l),
+    ]
     center = [_a(start), _b(start), "C", _b(end_c), _a(end_c)]
-    right = [_a(start), _b(br), _b(br2), _a(end_r)]
+    right = [
+        _a(start),
+        _b(_wrap_button(start, 1)),
+        _b(_wrap_button(start, 2)),
+        _a(end_r),
+    ]
     return [left, center, right]
 
 
@@ -216,11 +230,11 @@ def expand_slide(
     if shape == "-":
         return _straight_path(start, end)
     if shape == ">":
-        return _edge_path(start, end, clockwise=True)
+        return _edge_path(start, end, clockwise=_simai_ring_cw(start, end, ">"))
     if shape == "<":
-        return _edge_path(start, end, clockwise=False)
+        return _edge_path(start, end, clockwise=_simai_ring_cw(start, end, "<"))
     if shape == "^":
-        return _caret_path(start, end)
+        return _edge_path(start, end, clockwise=_simai_ring_cw(start, end, "^"))
     if shape == "v":
         return _v_center_path(start, end)
     if shape == "V":
@@ -229,13 +243,13 @@ def expand_slide(
             return _edge_path(start, end, clockwise=not _short_clockwise(start, end))
         return _grand_v(start, mid, end)
     if shape == "p":
-        return _inner_loop(start, end, clockwise=True)
-    if shape == "q":
         return _inner_loop(start, end, clockwise=False)
+    if shape == "q":
+        return _inner_loop(start, end, clockwise=True)
     if shape == "pp":
-        return _outer_loop(start, end, clockwise=True)
-    if shape == "qq":
         return _outer_loop(start, end, clockwise=False)
+    if shape == "qq":
+        return _outer_loop(start, end, clockwise=True)
     if shape == "s":
         return _thunder(start, end, mirror=False)
     if shape == "z":

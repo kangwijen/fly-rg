@@ -85,6 +85,13 @@ function boot(): void {
         hud.setChart(msg.title, msg.artist);
         playing = true;
         hud.setPlaying(true);
+        if (msg.active) {
+          scene.ring.setActive(msg.active);
+          scene.setActiveNotes(msg.active);
+        }
+        if (msg.active_sensors && typeof ring.setActiveSensors === "function") {
+          ring.setActiveSensors(msg.active_sensors);
+        }
         applyBackground();
         break;
       case "state": {
@@ -125,7 +132,13 @@ function boot(): void {
         hud.setDrive(msg.drive);
         brain.setState(msg.spikes ?? [], msg.spike_total ?? 0, msg.drive, msg.pose);
         hud.setBrainMeta(neuronCount, msg.spike_total ?? 0);
-        if (playing) media.sync(msg.t);
+        if (playing) {
+          if (!media.started) {
+            void media.start().then(() => media.sync(msg.t));
+          } else {
+            media.sync(msg.t);
+          }
+        }
         applyBackground();
         break;
       }
@@ -197,9 +210,10 @@ function boot(): void {
       return;
     }
     // load_chart already stop_play then starts from t=0; do not send stop
-    // (that would emit ready and pause the just-started track).
-    // Start media inside the click gesture so browsers allow audio.
-    void media.start().then(() => applyBackground());
+    // (that would emit ready and pause the just-unlocked track).
+    // Unlock autoplay inside the click gesture; real start waits for state t.
+    stoppedByUser = false;
+    void media.unlock();
     if (
       !socket.send({
         type: "load_chart",

@@ -3,8 +3,10 @@
 export class MediaPlayer {
   readonly audio = new Audio();
   readonly video = document.createElement("video");
-  private started = false;
+  private _started = false;
   private ended = false;
+  /** When true, the next sync() may seek to t in either direction. */
+  private initialSyncPending = false;
 
   constructor() {
     this.audio.preload = "auto";
@@ -20,6 +22,10 @@ export class MediaPlayer {
     this.video.addEventListener("ended", () => {
       this.video.pause();
     });
+  }
+
+  get started(): boolean {
+    return this._started;
   }
 
   setTrack(url: string | null): void {
@@ -44,10 +50,53 @@ export class MediaPlayer {
     this.video.load();
   }
 
-  /** Call from a user gesture (Play click) so autoplay policies allow audio. */
+  /**
+   * Satisfy autoplay policy on Play click without advancing the song clock.
+   * Leaves the track paused at t=0 until start().
+   */
+  async unlock(): Promise<void> {
+    this._started = false;
+    this.ended = false;
+    this.initialSyncPending = false;
+
+    const plays: Promise<void>[] = [];
+    if (this.audio.src) {
+      const wasMuted = this.audio.muted;
+      this.audio.muted = true;
+      this.audio.currentTime = 0;
+      plays.push(
+        this.audio
+          .play()
+          .then(() => {
+            this.audio.pause();
+            this.audio.currentTime = 0;
+            this.audio.muted = wasMuted;
+          })
+          .catch(() => {
+            this.audio.muted = wasMuted;
+          }),
+      );
+    }
+    if (this.video.src) {
+      this.video.currentTime = 0;
+      plays.push(
+        this.video.play().then(
+          () => {
+            this.video.pause();
+            this.video.currentTime = 0;
+          },
+          () => undefined,
+        ),
+      );
+    }
+    await Promise.all(plays);
+  }
+
+  /** Begin playback from t=0 when the simulation is ready. */
   async start(): Promise<void> {
     this.ended = false;
-    this.started = true;
+    this._started = true;
+    this.initialSyncPending = true;
     this.audio.currentTime = 0;
     this.video.currentTime = 0;
     const plays: Promise<void>[] = [];
@@ -72,15 +121,17 @@ export class MediaPlayer {
 
   /** Pause at the current frame; do not rewind or restart. */
   pauseAtEnd(): void {
-    this.started = false;
+    this._started = false;
     this.ended = true;
+    this.initialSyncPending = false;
     this.audio.pause();
     this.video.pause();
   }
 
   stop(): void {
-    this.started = false;
+    this._started = false;
     this.ended = false;
+    this.initialSyncPending = false;
     this.audio.pause();
     this.video.pause();
     try {
@@ -93,7 +144,34 @@ export class MediaPlayer {
 
   /** Keep media near simulation time t (seconds). */
   sync(t: number): void {
-    if (!this.started || this.ended) return;
+    if (!this._started || this.ended) return;
+
+    if (this.initialSyncPending) {
+      this.initialSyncPending = false;
+      const seekT = Math.max(0, t);
+      if (this.audio.src) {
+        try {
+          this.audio.currentTime = seekT;
+        } catch {
+          // ignore seek before metadata
+        }
+        if (this.audio.paused && t > 0.05) {
+          void this.audio.play().catch(() => undefined);
+        }
+      }
+      if (this.video.src) {
+        try {
+          this.video.currentTime = seekT;
+        } catch {
+          // ignore seek before metadata
+        }
+        if (this.video.paused && t > 0.05 && t < (this.video.duration || Infinity) - 0.05) {
+          void this.video.play().catch(() => undefined);
+        }
+      }
+      return;
+    }
+
     if (this.audio.src && !this.audio.paused) {
       const audioT = this.audio.currentTime;
       // Forward-only: never rewind when the sim lags the audio clock.

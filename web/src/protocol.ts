@@ -87,6 +87,8 @@ export interface ChartMessage {
   title: string;
   artist: string;
   notes: ChartNote[];
+  active?: ActiveNote[];
+  active_sensors?: string[];
 }
 
 export interface BrainLayoutMessage {

@@ -15,7 +15,7 @@ from websockets.asyncio.server import broadcast, serve
 from fly_rg.brain_backend import MockBrain, make_brain
 from fly_rg.chart import list_difficulties, parse_simai_subset
 from fly_rg.decoder import ActionDecoder
-from fly_rg.encoder import NoteEncoder
+from fly_rg.encoder import ON_PAD_TTH_S, NoteEncoder
 from fly_rg.judge import Judge
 from fly_rg.neuron_view import NeuronAtlas
 from fly_rg.protocol import (
@@ -57,6 +57,25 @@ def _levels_message(maidata: str) -> dict[str, Any]:
 
 def _press_sensor(x: float, y: float) -> str | None:
     return nearest_sensor(x, y)
+
+
+def _want_press(
+    *,
+    tap: bool,
+    occupancy: str | None,
+    intended: str | None,
+    slide_target: str | None,
+    tth: float | None = None,
+) -> bool:
+    if occupancy is None or intended is None:
+        return False
+    if occupancy != intended:
+        return False
+    if slide_target is not None and occupancy == slide_target:
+        return True
+    if tap:
+        return True
+    return tth is not None and tth <= ON_PAD_TTH_S
 
 
 def _contact_sensors(judge: Judge, now: float) -> set[str]:
@@ -137,6 +156,13 @@ async def _play_once(
     judge = Judge(chart.notes)
     decoder = ActionDecoder(brain, mock=is_mock, seed=0)
     encoder.clear_locks()
+    emit(
+        chart_message(
+            chart,
+            active=judge.active_notes(0.0, args.look_ahead),
+            active_sensors=judge.active_sensors(0.0, args.look_ahead),
+        )
+    )
     if not is_mock:
         try:
             brain.step(inject=[])
@@ -159,7 +185,6 @@ async def _play_once(
     last_log_t = -1e9
     brain_steps = 0
 
-    emit(chart_message(chart))
     print(
         f"playing {chart.title!r} notes={len(chart.notes)} end={end_t:.1f}s",
         flush=True,
@@ -242,41 +267,63 @@ async def _play_once(
                 )
             )
 
-        if dec.tap_l:
-            press_l = _press_sensor(*dec.hand_l)
-            if press_l is not None:
-                hit = judge.press(press_l, sim_t)
-                if hit is not None:
-                    emit(
-                        hit_message(
-                            t=hit.t,
-                            button=hit.button,
-                            sensor=hit.sensor,
-                            judgment=hit.judgment,
-                            timing=hit.timing,
-                        )
+        occupancy_l = _press_sensor(*dec.hand_l)
+        press_l = _want_press(
+            tap=dec.tap_l,
+            occupancy=occupancy_l,
+            intended=enc.target_l,
+            slide_target=enc.slide_l,
+            tth=enc.tth_l,
+        )
+        occupancy_r = _press_sensor(*dec.hand_r)
+        press_r = _want_press(
+            tap=dec.tap_r,
+            occupancy=occupancy_r,
+            intended=enc.target_r,
+            slide_target=enc.slide_r,
+            tth=enc.tth_r,
+        )
+        if press_l and occupancy_l is not None:
+            hit = judge.press(occupancy_l, sim_t)
+            if hit is not None:
+                emit(
+                    hit_message(
+                        t=hit.t,
+                        button=hit.button,
+                        sensor=hit.sensor,
+                        judgment=hit.judgment,
+                        timing=hit.timing,
                     )
-        if dec.tap_r:
-            press_r = _press_sensor(*dec.hand_r)
-            if press_r is not None:
-                hit = judge.press(press_r, sim_t)
-                if hit is not None:
-                    emit(
-                        hit_message(
-                            t=hit.t,
-                            button=hit.button,
-                            sensor=hit.sensor,
-                            judgment=hit.judgment,
-                            timing=hit.timing,
-                        )
+                )
+        if press_r and occupancy_r is not None:
+            hit = judge.press(occupancy_r, sim_t)
+            if hit is not None:
+                emit(
+                    hit_message(
+                        t=hit.t,
+                        button=hit.button,
+                        sensor=hit.sensor,
+                        judgment=hit.judgment,
+                        timing=hit.timing,
                     )
+                )
+
+        strike_l = 1.0 if press_l else dec.strike_l
+        strike_r = 1.0 if press_r else dec.strike_r
+        strike = max(strike_l, strike_r, dec.strike)
+        tap = dec.tap or press_l or press_r
+        tap_sensor = (
+            occupancy_l
+            if press_l
+            else (occupancy_r if press_r else dec.tap_sensor)
+        )
 
         spikes = atlas.spikes_for(
             last_drive,
             aim=dec.aim,
-            strike=dec.strike,
-            strike_l=dec.strike_l,
-            strike_r=dec.strike_r,
+            strike=strike,
+            strike_l=strike_l,
+            strike_r=strike_r,
             fired_count=len(fired_list),
             step=step_i,
         )
@@ -292,9 +339,9 @@ async def _play_once(
                 f"t={sim_t:.2f}s brain={last_brain_ms:.1f}ms/"
                 f"{brain_dt * 1000:.0f}ms "
                 f"L={dec.hand_l_sensor}->{enc.target_l} tth={tth_l} "
-                f"w={dec.omega_l:.2f} tap={int(dec.tap_l)} "
+                f"w={dec.omega_l:.2f} tap={int(press_l)} "
                 f"R={dec.hand_r_sensor}->{enc.target_r} tth={tth_r} "
-                f"w={dec.omega_r:.2f} tap={int(dec.tap_r)} "
+                f"w={dec.omega_r:.2f} tap={int(press_r)} "
                 f"growthL={enc.drive.get('growthL', 0.0):.2f} "
                 f"growthR={enc.drive.get('growthR', 0.0):.2f} "
                 f"slide={slide_l}/{slide_r} "
@@ -306,7 +353,7 @@ async def _play_once(
             sim_t,
             last_state_t,
             STATE_PERIOD_S,
-            tap=dec.tap,
+            tap=tap,
         ):
             last_state_t = sim_t
             if sim_t + 1e-12 >= last_spikes_t + SPIKE_PERIOD_S:
@@ -319,18 +366,18 @@ async def _play_once(
                     t=sim_t,
                     aim_button=dec.aim_button,
                     aim_sensor=dec.aim_sensor,
-                    tap=dec.tap,
-                    tap_button=dec.tap_button if dec.tap else None,
-                    tap_sensor=dec.tap_sensor if dec.tap else None,
+                    tap=tap,
+                    tap_button=dec.tap_button if tap else None,
+                    tap_sensor=tap_sensor if tap else None,
                     score=judge.score.to_dict(),
                     active=judge.active_notes(sim_t, args.look_ahead),
                     active_sensors=judge.active_sensors(sim_t, args.look_ahead),
                     drive=enc.drive,
                     pose={
                         "aim": dec.aim,
-                        "strike": dec.strike,
-                        "strike_l": dec.strike_l,
-                        "strike_r": dec.strike_r,
+                        "strike": strike,
+                        "strike_l": strike_l,
+                        "strike_r": strike_r,
                         "omega_l": dec.omega_l,
                         "omega_r": dec.omega_r,
                         "reach_l": dec.reach_l,

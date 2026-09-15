@@ -561,7 +561,6 @@ export class RingDisplay {
     ctx.shadowBlur = 3 * S;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
-    ctx.fillText("TOUCH SCREEN", CENTER, CENTER + OUTER_R + 14 * S);
     ctx.shadowBlur = 0;
   }
 

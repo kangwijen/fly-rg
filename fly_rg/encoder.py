@@ -19,6 +19,7 @@ from fly_rg.schema import Note
 from fly_rg.sensors import (
     REST_HOME,
     button_to_sensor,
+    nearest_sensor,
     parse_sensor,
     sensor_angle_rad,
     sensor_polar,
@@ -175,6 +176,37 @@ def _fovea(err: float) -> float:
     return math.exp(-0.5 * (err / FOVEA_SIGMA) ** 2)
 
 
+def _note_chart_end(note: Note) -> float:
+    """Last time this note occupies the chart timeline."""
+    if note.type == "slide" and note.slide is not None:
+        return float(note.slide.end_t)
+    if note.end is not None:
+        return float(note.end)
+    return float(note.t)
+
+
+def _chart_span(notes: list[Note]) -> tuple[float, float] | None:
+    if not notes:
+        return None
+    first = min(float(note.t) for note in notes)
+    last = max(_note_chart_end(note) for note in notes)
+    return first, last
+
+
+def _should_rest_home(
+    notes: list[Note], now: float, look_ahead_s: float
+) -> bool:
+    span = _chart_span(notes)
+    if span is None:
+        return True
+    first, last = span
+    if now < first - look_ahead_s:
+        return True
+    if now > last + 0.5:
+        return True
+    return False
+
+
 def _chord_velocity(
     dx: float, dy: float, t_go: float, vmax: float
 ) -> tuple[float, float]:
@@ -307,10 +339,7 @@ class NoteEncoder:
         for index, note, tth, sensor, nxt in approaching:
             size = _size_proxy(tth, look_ahead_s)
             waypoint = note.type == "slide" and nxt > 0
-            if waypoint:
-                growth = _growth_proxy(dt, look_ahead_s, dt)
-            else:
-                growth = _growth_proxy(tth, look_ahead_s, dt)
+            growth = _growth_proxy(tth, look_ahead_s, dt)
             threat = size * THREAT_GAIN
             chase = CHASE_BASE + CHASE_GAIN * size
             theta_n, r_n = sensor_polar(sensor)
@@ -412,18 +441,28 @@ class NoteEncoder:
                 drive[f"chase{side}"] += chase
                 drive[f"threat{side}"] += threat
                 growth_key = f"growth{side}"
-                drive[growth_key] = max(drive[growth_key], proxy * fovea)
-                if (
-                    float(row["err_xy"][side]) < DEADZONE
-                    and float(row["tth"]) <= ON_PAD_TTH_S
-                ):
-                    drive[growth_key] = max(drive[growth_key], 1.0)
+                on_intended = nearest_sensor(*hands_xy[side]) == str(row["sensor"])
+                if on_intended:
+                    drive[growth_key] = max(drive[growth_key], proxy * fovea)
+                    if (
+                        not row["in_progress"]
+                        and float(row["tth"]) <= ON_PAD_TTH_S
+                    ):
+                        drive[growth_key] = max(drive[growth_key], 1.0)
 
+        rest_home = _should_rest_home(notes, now, look_ahead_s)
         for side, (hx, hy) in hands_xy.items():
             target = best[side]
             if target is None:
-                tx, ty = sensor_xy(REST_HOME[side])
-                t_go = REST_T_GO_S
+                if rest_home:
+                    tx, ty = sensor_xy(REST_HOME[side])
+                    t_go = REST_T_GO_S
+                else:
+                    drive[f"east{side}"] = 0.0
+                    drive[f"west{side}"] = 0.0
+                    drive[f"north{side}"] = 0.0
+                    drive[f"south{side}"] = 0.0
+                    continue
             else:
                 tx, ty = target["xy"]
                 t_go = max(float(target["tth"]), T_GO_FLOOR_S, dt)
