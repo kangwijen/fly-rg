@@ -19,12 +19,15 @@ const EMPTY_DRIVE: Drive = {
   threatR: 0,
 };
 
+export type LevelInfo = { difficulty: number; level: string };
+
 function pct(v: number): string {
   return `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
 }
 
 export class Hud {
-  private root: HTMLElement;
+  private gameRoot: HTMLElement;
+  private neuralRoot: HTMLElement;
   private titleEl: HTMLElement;
   private artistEl: HTMLElement;
   private statusEl: HTMLElement;
@@ -34,83 +37,193 @@ export class Hud {
   private greatEl: HTMLElement;
   private goodEl: HTMLElement;
   private missEl: HTMLElement;
+  private hintEl: HTMLElement;
+  private metaEl: HTMLElement;
+  private brainHost: HTMLElement;
+  private levelSelect: HTMLSelectElement;
+  private fileInput: HTMLInputElement;
+  private playBtn: HTMLButtonElement;
   private fills: Record<keyof Drive, HTMLElement>;
+  private onZipSelected: ((file: File) => void) | null = null;
+  private onPlay: ((difficulty: number | null) => void) | null = null;
 
-  constructor(container: HTMLElement) {
-    container.innerHTML = `
-      <div class="hud-top">
-        <div class="hud-title-block">
-          <div class="hud-brand">fly-rg</div>
-          <div class="hud-title" data-title>Waiting for chart</div>
-          <div class="hud-artist" data-artist></div>
-        </div>
-        <div class="hud-status" data-status data-state="connecting">connecting</div>
-      </div>
-      <div class="hud-center">
-        <div class="hud-score">
-          <div class="hud-combo"><span>COMBO</span><b data-combo>0</b></div>
-          <div class="hud-accuracy" data-accuracy>0.0% ACC</div>
-          <div class="hud-judgments">
-            <div>PERFECT <b data-perfect>0</b></div>
-            <div>GREAT <b data-great>0</b></div>
-            <div>GOOD <b data-good>0</b></div>
-            <div>MISS <b data-miss>0</b></div>
-          </div>
-        </div>
-      </div>
-      <div class="hud-bottom">
-        <div class="hud-drives">
-          <div class="drive-group">
-            <div class="drive-label">Loom</div>
-            <div class="drive-row"><span>L</span><div class="drive-bar"><div class="drive-fill" data-loomL></div></div></div>
-            <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill" data-loomR></div></div></div>
-          </div>
-          <div class="drive-group">
-            <div class="drive-label">Chase</div>
-            <div class="drive-row"><span>L</span><div class="drive-bar"><div class="drive-fill" data-chaseL></div></div></div>
-            <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill" data-chaseR></div></div></div>
-          </div>
-          <div class="drive-group">
-            <div class="drive-label">Threat</div>
-            <div class="drive-row"><span>L</span><div class="drive-bar"><div class="drive-fill threat" data-threatL></div></div></div>
-            <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill threat" data-threatR></div></div></div>
-          </div>
+  constructor(gameOverlay: HTMLElement, neuralPane: HTMLElement) {
+    gameOverlay.innerHTML = `
+      <div class="hud-title-block">
+        <div class="hud-brand">fly-rg</div>
+        <div class="hud-title" data-title>Upload a chart zip</div>
+        <div class="hud-artist" data-artist></div>
+        <div class="hud-hint" data-hint>Majdata pack: maidata.txt + track.ogg/mp3 + bg.png/jpg (+ pv.mp4)</div>
+        <div class="hud-upload">
+          <label class="upload-btn">
+            Choose zip
+            <input type="file" accept=".zip,application/zip" data-zip hidden />
+          </label>
+          <select data-level disabled>
+            <option value="">difficulty</option>
+          </select>
+          <button type="button" data-play disabled>Play</button>
         </div>
       </div>
     `;
 
-    this.root = container;
-    this.titleEl = this.must("[data-title]");
-    this.artistEl = this.must("[data-artist]");
-    this.statusEl = this.must("[data-status]");
-    this.comboEl = this.must("[data-combo]");
-    this.accuracyEl = this.must("[data-accuracy]");
-    this.perfectEl = this.must("[data-perfect]");
-    this.greatEl = this.must("[data-great]");
-    this.goodEl = this.must("[data-good]");
-    this.missEl = this.must("[data-miss]");
+    neuralPane.innerHTML = `
+      <div class="neural-header">
+        <div>
+          <div class="neural-title">Neural Activity</div>
+          <div class="neural-meta" data-meta>waiting for layout</div>
+        </div>
+        <div class="hud-status" data-status data-state="connecting">connecting</div>
+      </div>
+      <div class="brain-host" data-brain></div>
+      <div class="brain-legend">
+        <span><i class="lg loom"></i>loom</span>
+        <span><i class="lg threat"></i>threat</span>
+        <span><i class="lg chase"></i>chase</span>
+        <span><i class="lg cmd"></i>command</span>
+        <span><i class="lg spike"></i>spike</span>
+      </div>
+      <div class="neural-score">
+        <div class="hud-combo"><span>COMBO</span><b data-combo>0</b></div>
+        <div class="hud-accuracy" data-accuracy>0.0% ACC</div>
+        <div class="hud-judgments">
+          <div>PERFECT <b data-perfect>0</b></div>
+          <div>GREAT <b data-great>0</b></div>
+          <div>GOOD <b data-good>0</b></div>
+          <div>MISS <b data-miss>0</b></div>
+        </div>
+      </div>
+      <div class="hud-drives">
+        <div class="drive-group">
+          <div class="drive-label">Loom</div>
+          <div class="drive-row"><span>L</span><div class="drive-bar"><div class="drive-fill" data-loomL></div></div></div>
+          <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill" data-loomR></div></div></div>
+        </div>
+        <div class="drive-group">
+          <div class="drive-label">Chase</div>
+          <div class="drive-row"><span>L</span><div class="drive-bar"><div class="drive-fill" data-chaseL></div></div></div>
+          <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill" data-chaseR></div></div></div>
+        </div>
+        <div class="drive-group">
+          <div class="drive-label">Threat</div>
+          <div class="drive-row"><span>L</span><div class="drive-bar"><div class="drive-fill threat" data-threatL></div></div></div>
+          <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill threat" data-threatR></div></div></div>
+        </div>
+      </div>
+    `;
+
+    this.gameRoot = gameOverlay;
+    this.neuralRoot = neuralPane;
+    this.titleEl = this.mustGame("[data-title]");
+    this.artistEl = this.mustGame("[data-artist]");
+    this.hintEl = this.mustGame("[data-hint]");
+    this.statusEl = this.mustNeural("[data-status]");
+    this.metaEl = this.mustNeural("[data-meta]");
+    this.comboEl = this.mustNeural("[data-combo]");
+    this.accuracyEl = this.mustNeural("[data-accuracy]");
+    this.perfectEl = this.mustNeural("[data-perfect]");
+    this.greatEl = this.mustNeural("[data-great]");
+    this.goodEl = this.mustNeural("[data-good]");
+    this.missEl = this.mustNeural("[data-miss]");
+    this.brainHost = this.mustNeural("[data-brain]");
+    this.levelSelect = this.mustGame("[data-level]") as HTMLSelectElement;
+    this.fileInput = this.mustGame("[data-zip]") as HTMLInputElement;
+    this.playBtn = this.mustGame("[data-play]") as HTMLButtonElement;
 
     this.fills = {
-      loomL: this.must("[data-loomL]"),
-      loomR: this.must("[data-loomR]"),
-      chaseL: this.must("[data-chaseL]"),
-      chaseR: this.must("[data-chaseR]"),
-      threatL: this.must("[data-threatL]"),
-      threatR: this.must("[data-threatR]"),
+      loomL: this.mustNeural("[data-loomL]"),
+      loomR: this.mustNeural("[data-loomR]"),
+      chaseL: this.mustNeural("[data-chaseL]"),
+      chaseR: this.mustNeural("[data-chaseR]"),
+      threatL: this.mustNeural("[data-threatL]"),
+      threatR: this.mustNeural("[data-threatR]"),
     };
+
+    this.fileInput.addEventListener("change", () => {
+      const file = this.fileInput.files?.[0];
+      if (file && this.onZipSelected) this.onZipSelected(file);
+    });
+    this.playBtn.addEventListener("click", () => {
+      const raw = this.levelSelect.value;
+      const difficulty = raw === "" ? null : Number(raw);
+      this.onPlay?.(difficulty);
+    });
 
     this.setScore(EMPTY_SCORE);
     this.setDrive(EMPTY_DRIVE);
   }
 
+  onUpload(handler: (file: File) => void): void {
+    this.onZipSelected = handler;
+  }
+
+  onPlayClick(handler: (difficulty: number | null) => void): void {
+    this.onPlay = handler;
+  }
+
+  mountBrain(canvas: HTMLCanvasElement): void {
+    this.brainHost.replaceChildren(canvas);
+  }
+
   setConnection(state: ConnectionState): void {
     this.statusEl.dataset.state = state;
     this.statusEl.textContent = state;
+    if (state === "open") {
+      this.hintEl.textContent = "connected · upload a Majdata zip to play";
+    } else if (state === "closed" || state === "error") {
+      this.hintEl.textContent =
+        "Server offline. Run: python -m fly_rg.play --mock";
+    } else {
+      this.hintEl.textContent = "connecting to play server...";
+    }
+  }
+
+  setLevels(levels: LevelInfo[]): void {
+    this.levelSelect.innerHTML = "";
+    if (!levels.length) {
+      this.levelSelect.disabled = true;
+      this.playBtn.disabled = true;
+      this.levelSelect.innerHTML = `<option value="">no levels</option>`;
+      return;
+    }
+    for (const lv of levels) {
+      const opt = document.createElement("option");
+      opt.value = String(lv.difficulty);
+      opt.textContent = lv.level
+        ? `inote_${lv.difficulty} (lv ${lv.level})`
+        : `inote_${lv.difficulty}`;
+      this.levelSelect.appendChild(opt);
+    }
+    // Prefer highest difficulty as default (often Master).
+    this.levelSelect.value = String(levels[levels.length - 1].difficulty);
+    this.levelSelect.disabled = false;
+    this.playBtn.disabled = false;
+  }
+
+  setPackHint(text: string): void {
+    this.hintEl.textContent = text;
   }
 
   setChart(title: string, artist: string): void {
     this.titleEl.textContent = title || "Untitled";
     this.artistEl.textContent = artist || "";
+    this.hintEl.textContent = "playing";
+  }
+
+  setReady(message: string): void {
+    this.hintEl.textContent = message;
+  }
+
+  setError(message: string): void {
+    this.hintEl.textContent = message;
+  }
+
+  setBrainMeta(neurons: number, spikeTotal: number): void {
+    if (neurons > 0) {
+      this.metaEl.textContent = `${neurons} neurons · ${spikeTotal} spikes/frame`;
+    } else {
+      this.metaEl.textContent = `${spikeTotal} spikes/frame`;
+    }
   }
 
   setScore(score: Score): void {
@@ -128,10 +241,18 @@ export class Hud {
     });
   }
 
-  private must(selector: string): HTMLElement {
-    const el = this.root.querySelector(selector);
+  private mustGame(selector: string): HTMLElement {
+    const el = this.gameRoot.querySelector(selector);
     if (!(el instanceof HTMLElement)) {
-      throw new Error(`HUD missing ${selector}`);
+      throw new Error(`Game overlay missing ${selector}`);
+    }
+    return el;
+  }
+
+  private mustNeural(selector: string): HTMLElement {
+    const el = this.neuralRoot.querySelector(selector);
+    if (!(el instanceof HTMLElement)) {
+      throw new Error(`Neural pane missing ${selector}`);
     }
     return el;
   }

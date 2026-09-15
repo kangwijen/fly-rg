@@ -1,10 +1,17 @@
 import * as THREE from "three";
 import type { RingDisplay } from "./ring";
 
+/** Screen disk radius in cabinet local units (matches CircleGeometry). */
+export const SCREEN_RADIUS = 0.86;
+/** Screen center in cabinet local space. */
+export const SCREEN_LOCAL = new THREE.Vector3(0, 1.7, 0.64);
+
 export class Cabinet {
   readonly group = new THREE.Group();
   readonly screenTexture: THREE.CanvasTexture;
   private screenMaterial: THREE.MeshBasicMaterial;
+  private readonly _local = new THREE.Vector3();
+  private readonly _normal = new THREE.Vector3();
 
   constructor(ring: RingDisplay) {
     this.screenTexture = new THREE.CanvasTexture(ring.canvas);
@@ -60,10 +67,10 @@ export class Cabinet {
       map: this.screenTexture,
     });
     const screen = new THREE.Mesh(
-      new THREE.CircleGeometry(0.86, 48),
+      new THREE.CircleGeometry(SCREEN_RADIUS, 48),
       this.screenMaterial,
     );
-    screen.position.set(0, 1.7, 0.64);
+    screen.position.copy(SCREEN_LOCAL);
     this.group.add(screen);
 
     const leftRail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.2, 0.08), magentaMat);
@@ -80,6 +87,33 @@ export class Cabinet {
 
     // Slight forward tilt like a real cabinet
     this.group.rotation.x = -0.12;
+  }
+
+  /**
+   * Map unit disk coords (x right, y up, ~[-1,1]) onto the screen glass in world space.
+   */
+  sensorWorldPos(unitX: number, unitY: number, out = new THREE.Vector3()): THREE.Vector3 {
+    this.group.updateWorldMatrix(true, false);
+    this._local.set(
+      unitX * SCREEN_RADIUS,
+      SCREEN_LOCAL.y + unitY * SCREEN_RADIUS,
+      SCREEN_LOCAL.z,
+    );
+    return out.copy(this.group.localToWorld(this._local));
+  }
+
+  /** Outward screen normal in world space (points toward the player). */
+  screenNormalWorld(out = new THREE.Vector3()): THREE.Vector3 {
+    this.group.updateWorldMatrix(true, false);
+    this._normal.set(0, 0, 1);
+    this._normal.transformDirection(this.group.matrixWorld);
+    return out.copy(this._normal);
+  }
+
+  /** Screen center in world space. */
+  screenCenterWorld(out = new THREE.Vector3()): THREE.Vector3 {
+    this.group.updateWorldMatrix(true, false);
+    return out.copy(this.group.localToWorld(this._local.copy(SCREEN_LOCAL)));
   }
 
   updateTexture(): void {

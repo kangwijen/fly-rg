@@ -1,4 +1,4 @@
-"""Judgment windows, combo, and score tracking."""
+"""Judgment windows, combo, and score tracking (sensor-based)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Never
 
 from fly_rg.schema import Note
+from fly_rg.sensors import button_to_sensor
 
 Judgment = Literal["perfect", "great", "good", "miss"]
 
@@ -48,28 +49,65 @@ class Score:
 @dataclass
 class HitEvent:
     t: float
-    button: int
+    button: int | None
     judgment: Judgment
     note_index: int
+    sensor: str
 
 
 @dataclass
 class Judge:
-    """Match presses to nearest unmatched notes; auto-miss past the Good window."""
+    """Match presses to sensors; slides advance through path before end_t."""
 
     notes: list[Note]
     matched: list[bool] = field(init=False)
+    # Next path index required for slides (0 = waiting for head / path[0]).
+    slide_next: list[int] = field(init=False)
+    head_judgment: list[Judgment | None] = field(init=False)
     score: Score = field(default_factory=Score)
 
     def __post_init__(self) -> None:
-        self.matched = [False] * len(self.notes)
+        n = len(self.notes)
+        self.matched = [False] * n
+        self.slide_next = [0] * n
+        self.head_judgment = [None] * n
 
-    def press(self, button: int, t: float) -> HitEvent | None:
-        """On press, match nearest unmatched note on that button within Good."""
+    def press(self, sensor_or_button: str | int, t: float) -> HitEvent | None:
+        """On press, match by sensor id (slides advance path order).
+
+        Accepts a sensor string ('A1', 'C') or button int 1..8 (maps to A{n}).
+        """
+        if isinstance(sensor_or_button, int):
+            sensor = button_to_sensor(sensor_or_button)
+        else:
+            sensor = sensor_or_button.strip().upper()
+            if sensor.startswith("C"):
+                sensor = "C"
+
+        # Prefer advancing an in-progress slide.
+        for i, note in enumerate(self.notes):
+            if self.matched[i] or note.type != "slide" or note.slide is None:
+                continue
+            if self.slide_next[i] <= 0:
+                continue
+            path = note.slide.path
+            nxt = self.slide_next[i]
+            if nxt >= len(path):
+                continue
+            if path[nxt] != sensor:
+                continue
+            return self._advance_slide(i, t)
+
+        # Match head / single-hit notes by sensor within Good of note.t.
         best_i: int | None = None
         best_abs = GOOD + 1.0
         for i, note in enumerate(self.notes):
-            if self.matched[i] or note.button != button:
+            if self.matched[i]:
+                continue
+            target = self._head_sensor(note)
+            if target != sensor:
+                continue
+            if note.type == "slide" and self.slide_next[i] > 0:
                 continue
             dt = abs(note.t - t)
             if dt <= GOOD and dt < best_abs:
@@ -77,27 +115,110 @@ class Judge:
                 best_i = i
         if best_i is None:
             return None
-        judgment = _window_judgment(self.notes[best_i].t - t)
+
+        note = self.notes[best_i]
+        judgment = _window_judgment(note.t - t)
+        if note.type == "slide" and note.slide is not None:
+            self.slide_next[best_i] = 1
+            self.head_judgment[best_i] = judgment
+            if len(note.slide.path) <= 1:
+                self._apply(best_i, judgment)
+                return HitEvent(
+                    t=t,
+                    button=note.button,
+                    judgment=judgment,
+                    note_index=best_i,
+                    sensor=sensor,
+                )
+            # Head accepted; body still in progress (not a final score event yet).
+            return HitEvent(
+                t=t,
+                button=note.button,
+                judgment=judgment,
+                note_index=best_i,
+                sensor=sensor,
+            )
+
         self._apply(best_i, judgment)
-        return HitEvent(t=t, button=button, judgment=judgment, note_index=best_i)
+        return HitEvent(
+            t=t,
+            button=note.button,
+            judgment=judgment,
+            note_index=best_i,
+            sensor=sensor,
+        )
+
+    def press_button(self, button: int, t: float) -> HitEvent | None:
+        """Compatibility helper: press A{button}."""
+        return self.press(button_to_sensor(button), t)
 
     def auto_miss(self, now: float) -> list[HitEvent]:
-        """Mark notes past the Good window as Miss."""
+        """Miss notes past windows / incomplete slides past end_t."""
         events: list[HitEvent] = []
         for i, note in enumerate(self.notes):
             if self.matched[i]:
                 continue
+            if note.type == "slide" and note.slide is not None:
+                if self.slide_next[i] > 0:
+                    if now > note.slide.end_t:
+                        self._apply(i, "miss")
+                        events.append(
+                            HitEvent(
+                                t=note.slide.end_t,
+                                button=note.button,
+                                judgment="miss",
+                                note_index=i,
+                                sensor=note.slide.end_sensor,
+                            )
+                        )
+                    continue
+                if now - note.t > GOOD:
+                    self._apply(i, "miss")
+                    events.append(
+                        HitEvent(
+                            t=note.t,
+                            button=note.button,
+                            judgment="miss",
+                            note_index=i,
+                            sensor=note.sensor,
+                        )
+                    )
+                continue
+
             if now - note.t > GOOD:
                 self._apply(i, "miss")
-                events.append(HitEvent(t=note.t, button=note.button, judgment="miss", note_index=i))
+                events.append(
+                    HitEvent(
+                        t=note.t,
+                        button=note.button,
+                        judgment="miss",
+                        note_index=i,
+                        sensor=note.sensor,
+                    )
+                )
         return events
 
     def active_notes(self, now: float, look_ahead_s: float) -> list[dict]:
-        """Notes still approaching for the state payload (progress 0..1 toward hit)."""
+        """Notes still approaching / in-progress for the state payload."""
         active: list[dict] = []
         for i, note in enumerate(self.notes):
             if self.matched[i]:
                 continue
+            if note.type == "slide" and note.slide is not None and self.slide_next[i] > 0:
+                path = note.slide.path
+                nxt = min(self.slide_next[i], len(path) - 1)
+                progress = self.slide_next[i] / max(len(path), 1)
+                active.append(
+                    {
+                        "t": note.t,
+                        "button": note.button,
+                        "sensor": path[nxt],
+                        "progress": float(progress),
+                        "type": note.type,
+                    }
+                )
+                continue
+
             tth = note.t - now
             if tth < -GOOD or tth > look_ahead_s:
                 continue
@@ -105,11 +226,72 @@ class Judge:
                 progress = 1.0
             else:
                 progress = max(0.0, min(1.0, 1.0 - tth / look_ahead_s))
-            active.append({"t": note.t, "button": note.button, "progress": progress})
+            active.append(
+                {
+                    "t": note.t,
+                    "button": note.button,
+                    "sensor": self._current_sensor(note, i),
+                    "progress": progress,
+                    "type": note.type,
+                }
+            )
         return active
+
+    def active_sensors(self, now: float, look_ahead_s: float) -> list[str]:
+        """Distinct sensors currently targeted (next slide node or note sensor)."""
+        seen: list[str] = []
+        for row in self.active_notes(now, look_ahead_s):
+            s = str(row["sensor"])
+            if s not in seen:
+                seen.append(s)
+        return seen
+
+    def current_target_sensor(self, note: Note, index: int) -> str:
+        return self._current_sensor(note, index)
 
     def done(self) -> bool:
         return all(self.matched)
+
+    def _head_sensor(self, note: Note) -> str:
+        if note.type == "slide" and note.slide is not None and note.slide.path:
+            return note.slide.path[0]
+        return note.sensor
+
+    def _current_sensor(self, note: Note, index: int) -> str:
+        if note.type == "slide" and note.slide is not None and note.slide.path:
+            nxt = self.slide_next[index]
+            if nxt >= len(note.slide.path):
+                return note.slide.path[-1]
+            return note.slide.path[nxt]
+        return note.sensor
+
+    def _advance_slide(self, index: int, t: float) -> HitEvent:
+        note = self.notes[index]
+        assert note.slide is not None
+        path = note.slide.path
+        self.slide_next[index] += 1
+        sensor = path[self.slide_next[index] - 1]
+        if self.slide_next[index] >= len(path):
+            judgment = self.head_judgment[index] or "perfect"
+            if t > note.slide.end_t:
+                judgment = "miss"
+            self._apply(index, judgment)
+            return HitEvent(
+                t=t,
+                button=note.button,
+                judgment=judgment,
+                note_index=index,
+                sensor=sensor,
+            )
+        # Intermediate waypoint: report head judgment echo without scoring again.
+        judgment = self.head_judgment[index] or "perfect"
+        return HitEvent(
+            t=t,
+            button=note.button,
+            judgment=judgment,
+            note_index=index,
+            sensor=sensor,
+        )
 
     def _apply(self, index: int, judgment: Judgment) -> None:
         self.matched[index] = True

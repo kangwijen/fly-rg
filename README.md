@@ -1,95 +1,93 @@
 # fly-rg
 
-Closed-loop maimai-style rhythm play driven by a fruit-fly connectome ([fly.ai](https://github.com/alextitonis/fly.ai) / `flybrain`). Notes become sensory inject; descending neurons become button presses; a Three.js cabinet scene mirrors the run over WebSocket.
+Closed-loop maimai-style rhythm play driven by a fruit-fly connectome ([fly.ai](https://github.com/alextitonis/fly.ai) / `flybrain`). You upload a **Majdata chart zip** in the browser; the fly brain plays it on a DX sensor cabinet while a neural activity panel runs on the right.
+
+Chart packs match [MajdataView_web](https://github.com/TeamMajdata/MajdataView_web): `maidata.txt`, `track.ogg` or `track.mp3`, `bg.png` or `bg.jpg`, optional `pv.mp4` (example: `charts/zip/teratera.zip`).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  chart[Chart JSON or subset Simai]
+  zip[Majdata zip upload]
+  web[web UI unpack]
+  ws[WebSocket]
   play[fly_rg.play]
   brain[flybrain or MockBrain]
-  ws[WebSocket :8765]
-  web[web Vite Three.js]
+  media[track audio plus bg or pv]
 
-  chart --> play
-  play --> brain
-  brain --> play
-  play --> ws
-  ws --> web
+  zip --> web
+  web -->|maidata text| ws --> play --> brain
+  brain --> play --> ws --> web
+  web --> media
 ```
 
-Optional offline path: `tools/majsimai_export` converts full-ish maidata toward the same JSON the Python subset loader already understands for taps/holds.
+Media stays in the browser (blob URLs). Only `maidata.txt` is sent to the Python server.
 
 ## Install
 
 - Python 3.10+
-- Node.js 18+ (for `web/`)
+- Node.js 18+
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
+cd web && npm i
 ```
 
-Optional real connectome (large download):
+Optional real connectome:
 
 ```bash
 pip install flybrain && flybrain download
 ```
 
-## Quickstart (mock, no GPU / connectome)
+## Play (main path)
+
+Terminal 1:
 
 ```bash
-pip install -e ".[dev]"
-python -m fly_rg.play --chart charts/demo/maidata.txt --mock --port 8765
-cd web && npm i && npm run dev
+python -m fly_rg.play --mock
 ```
 
-Open the Vite URL, connect to `ws://127.0.0.1:8765`, and watch the mock brain tap the demo chart.
-
-## Real brain
-
-Omit `--mock` after `flybrain download`. Prefer GPU when available:
+Terminal 2:
 
 ```bash
-python -m fly_rg.play --chart charts/demo/chart.json --device cuda --port 8765
+cd web && npm run dev
 ```
 
-Default device selection follows flybrain / fly_rg (typically auto or CPU if CUDA is unavailable). Pass `--device cpu` to force CPU.
+Open http://127.0.0.1:5173:
 
-## Chart formats
+1. **Choose zip** (e.g. `charts/zip/teratera.zip`)
+2. Pick a **difficulty** (`inote_N`)
+3. **Play**
 
-Shared timed-note JSON:
+Status should read `open`. Notes move on the cabinet; jacket/PV sits under the sensor grid; track audio syncs to simulation time.
 
-```json
-{
-  "title": "",
-  "artist": "",
-  "offset": 0.0,
-  "notes": [
-    { "t": 0.0, "button": 1, "type": "tap", "end": null }
-  ]
-}
-```
-
-Subset Simai (`maidata.txt`): `&title=`, `&artist=`, `&first=`, `(bpm)`, `{n}`, taps `1`-`8`, break `1b`, holds `1h[x:y]` / `1h[#seconds]`, each `/`. Slides and touch are out of scope for the Python subset parser.
-
-Demo chart: `charts/demo/maidata.txt` and matching `charts/demo/chart.json`.
-
-## MajSimai export tool
-
-Optional .NET 8 CLI under `tools/majsimai_export`. It ships a **self-contained subset exporter** (builds without MajSimai). See that folder's README for build/run and how to ProjectReference a local [MajSimai](https://github.com/TeamMajdata/MajSimai) clone later for slides/touch. Do not vendor MajSimai into this repo (upstream has no license file).
+Real brain (after download):
 
 ```bash
-cd tools/majsimai_export
-dotnet build -c Release
-dotnet run -c Release -- ../../charts/demo/maidata.txt -o ../../charts/demo/chart.json
+python -m fly_rg.play --device cuda
 ```
 
-Omit `--difficulty` to use the lowest `&inote_N=` chart (demo uses `&inote_1=`).
+## Zip layout
+
+Files may sit in a subfolder. Required names (case-insensitive):
+
+| File | Role |
+| --- | --- |
+| `maidata.txt` | Simai chart |
+| `track.ogg` / `track.mp3` | Audio |
+| `bg.png` / `bg.jpg` | Jacket behind sensors |
+| `pv.mp4` | Optional video behind sensors (preferred over bg when present) |
+
+## Chart support
+
+Subset Simai: taps/holds 1-8, touch A/B/C/D/E, basic slides (`- > < ^ v V`). Wifi / exotic slides are skipped with a warning. DX sensor grid uses Majdata angles.
+
+Optional offline JSON export: `tools/majsimai_export` (same timed-note schema).
+
 ## Credits
 
-- [fly.ai](https://github.com/alextitonis/fly.ai) (MIT) and the MaleCNS connectome via `flybrain`
-- [Majdata](https://github.com/TeamMajdata) / [MajSimai](https://github.com/TeamMajdata/MajSimai) for Simai chart tooling (optional bridge only)
+- [fly.ai](https://github.com/alextitonis/fly.ai) (MIT) and MaleCNS via `flybrain`
+- [Majdata](https://github.com/TeamMajdata) / [MajdataView_web](https://github.com/TeamMajdata/MajdataView_web) / [MajSimai](https://github.com/TeamMajdata/MajSimai)
 - MaleCNS connectome data: CC BY 4.0
 
 ## License

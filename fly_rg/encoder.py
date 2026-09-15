@@ -3,22 +3,8 @@
 Mirrors the spirit of flybrain FeatureDetectors (sshfighter) without Eyes
 photoreceptors: drive LPLC2 (loom), LC4 (threat), and LC10a (chase) by side.
 
-Button mapping (fly facing the cabinet, button 1 at top):
-  angle_deg(button i) = (i - 1) * 45 - 90
-  side L if sin(angle) > 0 else R
-
-  button | angle | side (sin rule)
-       1 |  -90  | R
-       2 |  -45  | R
-       3 |    0  | R
-       4 |   45  | L
-       5 |   90  | L
-       6 |  135  | L
-       7 |  180  | R
-       8 |  225  | R
-
-Decoder aim sectors use a separate ring split (8,1,2,7) vs (3,4,5,6); this
-encoder only needs left/right hemifield for inject.
+Sensor geometry comes from sensors.py (Majdata GetAreaPos). Targets the
+current sensor (note.sensor, or the next unfinished slide path node).
 """
 
 from __future__ import annotations
@@ -28,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fly_rg.schema import Note
+from fly_rg.sensors import button_to_sensor, sensor_angle_rad, sensor_side
 
 DRIVE_KEYS = ("loomL", "loomR", "chaseL", "chaseR", "threatL", "threatR")
 CAP = 0.8
@@ -51,15 +38,21 @@ class EncoderResult:
 
 
 def button_angle_deg(button: int) -> float:
-    return (button - 1) * 45.0 - 90.0
+    """A-button angle in degrees (Majdata GetAreaPos)."""
+    return math.degrees(sensor_angle_rad("A", button))
 
 
 def button_side(button: int) -> str:
-    """L if sin(angle) > 0 else R (see module docstring)."""
-    if not 1 <= button <= 8:
-        raise ValueError(f"button must be 1..8, got {button}")
-    angle = math.radians(button_angle_deg(button))
-    return "L" if math.sin(angle) > 0 else "R"
+    """L/R hemifield for button 1..8 via A-sensor x coordinate."""
+    return sensor_side(button_to_sensor(button))
+
+
+def note_target_sensor(note: Note, *, slide_next: int = 0) -> str:
+    """Sensor the fly should aim at for this note right now."""
+    if note.type == "slide" and note.slide is not None and note.slide.path:
+        idx = min(max(slide_next, 0), len(note.slide.path) - 1)
+        return note.slide.path[idx]
+    return note.sensor
 
 
 def _size_proxy(time_to_hit: float, look_ahead_s: float) -> float:
@@ -98,16 +91,31 @@ class NoteEncoder:
         *,
         look_ahead_s: float = 1.0,
         dt: float = 0.02,
+        slide_next: list[int] | None = None,
     ) -> EncoderResult:
         drive = {k: 0.0 for k in DRIVE_KEYS}
-        approaching: list[tuple[Note, float]] = []
-        for note in notes:
+        approaching: list[tuple[Note, float, str]] = []
+        for i, note in enumerate(notes):
+            sensor = note_target_sensor(
+                note, slide_next=0 if slide_next is None else slide_next[i]
+            )
+            # In-progress slides stay relevant until end_t.
+            if (
+                note.type == "slide"
+                and note.slide is not None
+                and slide_next is not None
+                and slide_next[i] > 0
+            ):
+                tth = max(0.0, note.slide.end_t - now)
+                if now <= note.slide.end_t:
+                    approaching.append((note, max(tth, 1e-3), sensor))
+                continue
             tth = note.t - now
             if 0.0 < tth <= look_ahead_s:
-                approaching.append((note, tth))
+                approaching.append((note, tth, sensor))
 
-        for note, tth in approaching:
-            side = button_side(note.button)
+        for _note, tth, sensor in approaching:
+            side = sensor_side(sensor)
             size = _size_proxy(tth, look_ahead_s)
             growth = _growth_proxy(tth, look_ahead_s, dt)
             loom = min(CAP, growth * LOOM_GAIN + size * LOOM_SIZE)
@@ -116,8 +124,8 @@ class NoteEncoder:
             drive[f"threat{side}"] = max(drive[f"threat{side}"], threat)
 
         if approaching:
-            nearest, tth = min(approaching, key=lambda x: x[1])
-            side = button_side(nearest.button)
+            _nearest, tth, sensor = min(approaching, key=lambda x: x[1])
+            side = sensor_side(sensor)
             size = _size_proxy(tth, look_ahead_s)
             chase = min(CAP, CHASE_BASE + CHASE_GAIN * size)
             drive[f"chase{side}"] = max(drive[f"chase{side}"], chase)

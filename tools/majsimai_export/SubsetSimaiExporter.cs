@@ -5,8 +5,9 @@ namespace MajSimaiExport;
 
 /// <summary>
 /// Self-contained subset Simai exporter (same scope as fly_rg.chart.parse_simai_subset):
-/// metadata, BPM, beat divisor, taps 1-8, break taps, holds, each (/).
-/// Slides and touch notes are skipped with a warning.
+/// metadata, BPM, beat divisor, taps 1-8, break taps, holds, touch, touch hold,
+/// basic slides (- &gt; &lt; ^ v V), each (/).
+/// Wifi / exotic slides are skipped with a warning.
 /// </summary>
 public static class SubsetSimaiExporter
 {
@@ -125,6 +126,17 @@ public static class SubsetSimaiExporter
             return 0;
         }
 
+        void WarnOnce(string message)
+        {
+            if (warnedUnsupported)
+            {
+                return;
+            }
+
+            Console.Error.WriteLine(message);
+            warnedUnsupported = true;
+        }
+
         while (i < n)
         {
             var c = inote[i];
@@ -145,9 +157,10 @@ public static class SubsetSimaiExporter
                 continue;
             }
 
-            if (c is 'E')
+            if ((c is 'E' or 'e')
+                && !(i + 1 < n && (char.IsDigit(inote[i + 1]) || inote[i + 1] is 'h' or 'H' or 'f' or 'F')))
             {
-                // End-of-chart marker when standing alone (not part of a note token).
+                // Bare E ends the chart; E1..E8 / Eh / Ef are touch notes.
                 break;
             }
 
@@ -194,109 +207,221 @@ public static class SubsetSimaiExporter
                 continue;
             }
 
-            if (char.IsDigit(c))
+            // Touch / touch hold: A1, B2f, C, A1h[8:1]
+            if (c is >= 'A' and <= 'E' or >= 'a' and <= 'e')
             {
-                var buttons = new List<int>();
-                while (i < n && char.IsDigit(inote[i]))
+                var area = char.ToUpperInvariant(c);
+                i++;
+                int? index = null;
+                if (i < n && inote[i] is >= '1' and <= '8')
                 {
-                    var digit = inote[i] - '0';
-                    if (digit is < 1 or > 8)
-                    {
-                        throw new InvalidOperationException($"Button out of range at index {i}: {digit}");
-                    }
-
-                    buttons.Add(digit);
+                    index = inote[i] - '0';
                     i++;
                 }
 
+                if (i < n && inote[i] is 'f' or 'F')
+                {
+                    i++;
+                }
+
+                string sensor;
+                try
+                {
+                    sensor = NormalizeTouchSensor(area, index);
+                }
+                catch (Exception)
+                {
+                    WarnOnce($"Warning: skipping bad touch near index {i}.");
+                    continue;
+                }
+
                 double? holdEnd = null;
-                var skippedShape = false;
-
-                while (i < n)
+                var isHold = false;
+                if (i < n && inote[i] is 'h' or 'H')
                 {
-                    var m = inote[i];
-                    if (m is 'b' or 'B' or 'x' or 'X' or '$')
+                    isHold = true;
+                    i++;
+                    if (i < n && inote[i] == '[')
                     {
                         i++;
-                        continue;
-                    }
-
-                    // EX tap uses trailing 'e' / "ex"; do not treat as chart end.
-                    if (m is 'e')
-                    {
-                        i++;
-                        continue;
-                    }
-
-                    if (m is 'h' or 'H')
-                    {
-                        i++;
-                        if (i < n && inote[i] == '[')
-                        {
-                            i++;
-                            var lenBody = ReadUntil(inote, ref i, ']');
-                            holdEnd = time + ParseHoldLength(lenBody, bpm);
-                        }
-
-                        continue;
-                    }
-
-                    if (IsSlideOrTouchStart(m))
-                    {
-                        skippedShape = true;
-                        i = SkipUnsupportedNoteTail(inote, i);
-                        break;
-                    }
-
-                    break;
-                }
-
-                if (skippedShape)
-                {
-                    if (!warnedUnsupported)
-                    {
-                        Console.Error.WriteLine(
-                            "Warning: slides/touch (and similar) are not exported by the subset parser; skipped.");
-                        warnedUnsupported = true;
-                    }
-                }
-                else
-                {
-                    foreach (var button in buttons)
-                    {
-                        notes.Add(new ChartNote
-                        {
-                            T = time,
-                            Button = button,
-                            Type = holdEnd.HasValue ? "hold" : "tap",
-                            End = holdEnd,
-                        });
+                        var lenBody = ReadUntil(inote, ref i, ']');
+                        holdEnd = time + ParseHoldLength(lenBody, bpm);
                     }
                 }
 
+                notes.Add(new ChartNote
+                {
+                    T = time,
+                    Type = isHold ? "touch_hold" : "touch",
+                    Sensor = sensor,
+                    Button = ButtonFromSensor(sensor),
+                    End = holdEnd,
+                });
                 continue;
             }
 
-            if (!warnedUnsupported)
+            if (char.IsDigit(c))
             {
-                Console.Error.WriteLine($"Warning: skipping unsupported character '{c}' in inote.");
-                warnedUnsupported = true;
+                var startButton = c - '0';
+                if (startButton is < 1 or > 8)
+                {
+                    throw new InvalidOperationException($"Button out of range at index {i}: {startButton}");
+                }
+
+                i++;
+                // Optional break marker.
+                if (i < n && inote[i] is 'b' or 'B')
+                {
+                    i++;
+                }
+
+                // Hold: h[...]
+                if (i < n && inote[i] is 'h' or 'H')
+                {
+                    i++;
+                    double? holdEnd = null;
+                    if (i < n && inote[i] == '[')
+                    {
+                        i++;
+                        var lenBody = ReadUntil(inote, ref i, ']');
+                        holdEnd = time + ParseHoldLength(lenBody, bpm);
+                    }
+
+                    notes.Add(new ChartNote
+                    {
+                        T = time,
+                        Type = "hold",
+                        Sensor = $"A{startButton}",
+                        Button = startButton,
+                        End = holdEnd,
+                    });
+                    continue;
+                }
+
+                // Basic slide: shape + end + [len]
+                if (i < n && SlidePaths.SupportedShapes.Contains(inote[i]))
+                {
+                    var shape = inote[i];
+                    i++;
+                    if (i >= n || inote[i] is < '1' or > '8')
+                    {
+                        WarnOnce("Warning: skipping malformed slide (missing end button).");
+                        i = SkipUnsupportedNoteTail(inote, i);
+                        continue;
+                    }
+
+                    var endButton = inote[i] - '0';
+                    i++;
+                    if (i >= n || inote[i] != '[')
+                    {
+                        WarnOnce("Warning: skipping slide without duration [...].");
+                        i = SkipUnsupportedNoteTail(inote, i);
+                        continue;
+                    }
+
+                    i++;
+                    var lenBody = ReadUntil(inote, ref i, ']');
+                    var dur = ParseHoldLength(lenBody, bpm);
+                    List<string> path;
+                    try
+                    {
+                        path = SlidePaths.Expand(shape, startButton, endButton);
+                    }
+                    catch (Exception ex)
+                    {
+                        WarnOnce($"Warning: skipping slide: {ex.Message}");
+                        continue;
+                    }
+
+                    var endT = time + dur;
+                    notes.Add(new ChartNote
+                    {
+                        T = time,
+                        Type = "slide",
+                        Sensor = path[0],
+                        Button = startButton,
+                        End = endT,
+                        Slide = new SlideInfo
+                        {
+                            Shape = shape.ToString(),
+                            EndSensor = path[^1],
+                            Path = path,
+                            EndT = endT,
+                        },
+                    });
+                    continue;
+                }
+
+                // Exotic / multi-char slides after digit.
+                if (i < n && IsExoticSlideStart(inote[i]))
+                {
+                    WarnOnce("Warning: wifi/exotic slides are not exported by the subset parser; skipped.");
+                    i = SkipUnsupportedNoteTail(inote, i);
+                    continue;
+                }
+
+                // Plain tap (and multi-digit each like 15 without slash — rare; take single digit).
+                notes.Add(new ChartNote
+                {
+                    T = time,
+                    Type = "tap",
+                    Sensor = $"A{startButton}",
+                    Button = startButton,
+                    End = null,
+                });
+                continue;
             }
 
+            WarnOnce($"Warning: skipping unsupported character '{c}' in inote.");
             i++;
         }
 
         notes.Sort((a, b) =>
         {
             var cmp = a.T.CompareTo(b.T);
-            return cmp != 0 ? cmp : a.Button.CompareTo(b.Button);
+            if (cmp != 0)
+            {
+                return cmp;
+            }
+
+            cmp = string.CompareOrdinal(a.Sensor, b.Sensor);
+            if (cmp != 0)
+            {
+                return cmp;
+            }
+
+            return Nullable.Compare(a.Button, b.Button);
         });
         return notes;
     }
 
-    private static bool IsSlideOrTouchStart(char m) =>
-        m is '-' or '^' or '<' or '>' or 'v' or 'V' or 'p' or 'q' or 's' or 'z' or 'w'
-            or '*' or '@' or 'C' or 'f' or 'F';
+    private static string NormalizeTouchSensor(char area, int? index)
+    {
+        if (area == 'C')
+        {
+            return "C";
+        }
+
+        if (index is null)
+        {
+            throw new InvalidOperationException($"touch area {area} requires index 1..8");
+        }
+
+        return $"{area}{index.Value}";
+    }
+
+    private static int? ButtonFromSensor(string sensor)
+    {
+        if (sensor.Length >= 2 && sensor[0] == 'A' && int.TryParse(sensor[1..], out var b) && b is >= 1 and <= 8)
+        {
+            return b;
+        }
+
+        return null;
+    }
+
+    private static bool IsExoticSlideStart(char m) =>
+        m is 'p' or 'q' or 's' or 'z' or 'w' or 'P' or 'Q' or 'S' or 'Z' or 'W' or '*' or '@';
 
     private static double ParseHoldLength(string body, double bpm)
     {

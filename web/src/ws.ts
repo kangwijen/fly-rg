@@ -1,4 +1,4 @@
-import { isServerMessage, type ServerMessage } from "./protocol";
+import { isServerMessage, type ClientMessage, type ServerMessage } from "./protocol";
 
 export type ConnectionState = "connecting" | "open" | "closed" | "error";
 
@@ -14,8 +14,7 @@ function resolveUrl(explicit?: string): string {
   const override = params.get("ws");
   if (override) return override;
 
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws`;
+  return "ws://127.0.0.1:8765";
 }
 
 export class GameSocket {
@@ -67,6 +66,12 @@ export class GameSocket {
     socket.addEventListener("error", () => {
       this.setState("error");
     });
+  }
+
+  send(msg: ClientMessage): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify(msg));
+    return true;
   }
 
   disconnect(): void {

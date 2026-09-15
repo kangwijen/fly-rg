@@ -32,15 +32,24 @@ def state_message(
     active: list[dict[str, Any]],
     drive: dict[str, float],
     pose: dict[str, float],
+    spikes: list[int] | None = None,
+    spike_total: int = 0,
+    aim_sensor: str | None = None,
+    tap_sensor: str | None = None,
+    active_sensors: list[str] | None = None,
 ) -> dict[str, Any]:
+    # aim_button / tap_button stay ints for A-sensors, else null.
     return {
         "type": "state",
         "t": float(t),
         "aim_button": aim_button,
+        "aim_sensor": aim_sensor,
         "tap": bool(tap),
         "tap_button": tap_button,
+        "tap_sensor": tap_sensor,
         "score": score,
         "active": active,
+        "active_sensors": list(active_sensors or []),
         "drive": {
             "loomL": float(drive.get("loomL", 0.0)),
             "loomR": float(drive.get("loomR", 0.0)),
@@ -53,14 +62,28 @@ def state_message(
             "aim": float(pose.get("aim", 0.0)),
             "strike": float(pose.get("strike", 0.0)),
         },
+        "spikes": list(spikes or []),
+        "spike_total": int(spike_total),
     }
 
 
-def hit_message(*, t: float, button: int, judgment: str) -> dict[str, Any]:
+def brain_layout_message(layout: dict[str, Any]) -> dict[str, Any]:
+    """Pass-through helper; layout already includes type=brain_layout."""
+    return layout
+
+
+def hit_message(
+    *,
+    t: float,
+    button: int | None,
+    judgment: str,
+    sensor: str | None = None,
+) -> dict[str, Any]:
     return {
         "type": "hit",
         "t": float(t),
-        "button": int(button),
+        "button": button,
+        "sensor": sensor,
         "judgment": judgment,
     }
 

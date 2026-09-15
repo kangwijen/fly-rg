@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import math
 import random
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from fly_rg.encoder import button_side
+from fly_rg.encoder import note_target_sensor
 from fly_rg.schema import Note
+from fly_rg.sensors import button_to_sensor, sensor_side, sensor_xy
 
-# Aim sectors when DNa02 prefers left vs right.
+# Aim sectors when DNa02 prefers left vs right (A-button indices).
 LEFT_BUTTONS = (8, 1, 2, 7)
 RIGHT_BUTTONS = (3, 4, 5, 6)
 
@@ -32,6 +32,8 @@ class DecodeResult:
     aim_button: int | None
     tap: bool
     tap_button: int | None
+    aim_sensor: str | None
+    tap_sensor: str | None
     aim: float  # -1..1
     strike: float  # 0..1
 
@@ -47,8 +49,19 @@ def _as_index_set(indices: Any) -> set[int]:
         return {int(indices)}
 
 
+def _sensor_to_button(sensor: str | None) -> int | None:
+    if not sensor:
+        return None
+    s = sensor.strip().upper()
+    if len(s) >= 2 and s[0] == "A" and s[1:].isdigit():
+        idx = int(s[1:])
+        if 1 <= idx <= 8:
+            return idx
+    return None
+
+
 class ActionDecoder:
-    """DNa02 L/R -> aim; DNp01 -> tap, mapped onto approaching notes."""
+    """DNa02 L/R -> aim; DNp01 -> tap, mapped onto approaching sensors."""
 
     def __init__(
         self,
@@ -91,10 +104,13 @@ class ActionDecoder:
         look_ahead_s: float = 1.0,
         drive: dict[str, float] | None = None,
         last_inject: dict[str, float] | None = None,
+        slide_next: list[int] | None = None,
     ) -> DecodeResult:
         if self.mock:
-            return self._decode_mock(now, notes, look_ahead_s, drive or last_inject or {})
-        return self._decode_spikes(now, notes, look_ahead_s)
+            return self._decode_mock(
+                now, notes, look_ahead_s, drive or last_inject or {}, slide_next
+            )
+        return self._decode_spikes(now, notes, look_ahead_s, slide_next)
 
     def _rates(self) -> tuple[float, float, float]:
         if not self._history:
@@ -107,7 +123,32 @@ class ActionDecoder:
         tap = sum(x[2] for x in tap_win)
         return float(l), float(r), float(tap)
 
-    def _decode_spikes(self, now: float, notes: list[Note], look_ahead_s: float) -> DecodeResult:
+    def _active_targets(
+        self,
+        now: float,
+        notes: list[Note],
+        look_ahead_s: float,
+        slide_next: list[int] | None,
+    ) -> list[tuple[Note, str]]:
+        out: list[tuple[Note, str]] = []
+        for i, note in enumerate(notes):
+            nxt = 0 if slide_next is None else slide_next[i]
+            sensor = note_target_sensor(note, slide_next=nxt)
+            if note.type == "slide" and note.slide is not None and nxt > 0:
+                if now <= note.slide.end_t:
+                    out.append((note, sensor))
+                continue
+            if 0.0 < (note.t - now) <= look_ahead_s:
+                out.append((note, sensor))
+        return out
+
+    def _decode_spikes(
+        self,
+        now: float,
+        notes: list[Note],
+        look_ahead_s: float,
+        slide_next: list[int] | None,
+    ) -> DecodeResult:
         l, r, tap_count = self._rates()
         diff = r - l
         if abs(diff) < STEER_MARGIN:
@@ -120,23 +161,26 @@ class ActionDecoder:
             aim = max(-1.0, diff / max(STEER_MARGIN * 4, 1))
             prefer = LEFT_BUTTONS
 
-        active = [n for n in notes if 0.0 < (n.t - now) <= look_ahead_s]
-        aim_button = _pick_aim_button(aim, prefer, active)
+        active = self._active_targets(now, notes, look_ahead_s, slide_next)
+        aim_sensor = _pick_aim_sensor(aim, prefer, active)
+        aim_button = _sensor_to_button(aim_sensor)
 
         want_tap = tap_count >= TAP_SPIKES
         tap = False
-        tap_button: int | None = None
+        tap_sensor: str | None = None
         strike = min(1.0, tap_count / max(TAP_SPIKES, 1))
         if want_tap and (now - self._last_tap_t) >= TAP_COOLDOWN_S:
-            tap_button = _pick_tap_button(aim_button, prefer, active, aim)
-            if tap_button is not None:
+            tap_sensor = _pick_tap_sensor(aim_sensor, prefer, active, aim)
+            if tap_sensor is not None:
                 tap = True
                 self._last_tap_t = now
                 strike = 1.0
         return DecodeResult(
             aim_button=aim_button,
             tap=tap,
-            tap_button=tap_button if tap else None,
+            tap_button=_sensor_to_button(tap_sensor) if tap else None,
+            aim_sensor=aim_sensor,
+            tap_sensor=tap_sensor if tap else None,
             aim=aim,
             strike=strike,
         )
@@ -147,6 +191,7 @@ class ActionDecoder:
         notes: list[Note],
         look_ahead_s: float,
         drive: dict[str, float],
+        slide_next: list[int] | None,
     ) -> DecodeResult:
         loom_l = float(drive.get("loomL", 0.0))
         loom_r = float(drive.get("loomR", 0.0))
@@ -162,11 +207,10 @@ class ActionDecoder:
             aim = (right_strength - left_strength) / max(total, 1e-9)
             prefer = RIGHT_BUTTONS if aim >= 0 else LEFT_BUTTONS
 
-        active = [n for n in notes if 0.0 < (n.t - now) <= look_ahead_s]
-        aim_button = _pick_aim_button(aim, prefer, active)
+        active = self._active_targets(now, notes, look_ahead_s, slide_next)
+        aim_sensor = _pick_aim_sensor(aim, prefer, active)
+        aim_button = _sensor_to_button(aim_sensor)
 
-        # Synthesize taps when a note is inside the Perfect window; probability
-        # scales with inject strength so the mock still "plays".
         inject_strength = max(
             loom_l,
             loom_r,
@@ -176,86 +220,107 @@ class ActionDecoder:
             float(drive.get("threatR", 0.0)),
         )
         tap = False
-        tap_button: int | None = None
+        tap_sensor: str | None = None
         strike = min(1.0, inject_strength / 0.8)
         if (now - self._last_tap_t) >= TAP_COOLDOWN_S:
-            candidates = [n for n in notes if abs(n.t - now) <= PERFECT_WINDOW_S]
+            candidates: list[tuple[Note, str]] = []
+            for i, note in enumerate(notes):
+                nxt = 0 if slide_next is None else slide_next[i]
+                sensor = note_target_sensor(note, slide_next=nxt)
+                if note.type == "slide" and note.slide is not None and nxt > 0:
+                    # Keep pressing along the path while the slide is live.
+                    if now <= note.slide.end_t:
+                        candidates.append((note, sensor))
+                    continue
+                if abs(note.t - now) <= PERFECT_WINDOW_S:
+                    candidates.append((note, sensor))
             if candidates:
-                # Prefer the note matching aim_button / preferred sector.
-                chosen = _best_note_for_aim(candidates, aim_button, prefer, aim)
-                # Higher drive -> more reliable Perfect taps (deterministic RNG).
+                chosen = _best_target_for_aim(candidates, aim_sensor, prefer, aim)
                 p = min(0.95, 0.35 + 0.8 * inject_strength)
                 if chosen is not None and self.rng.random() < p:
                     tap = True
-                    tap_button = chosen.button
+                    tap_sensor = chosen[1]
                     self._last_tap_t = now
                     strike = 1.0
         return DecodeResult(
             aim_button=aim_button,
             tap=tap,
-            tap_button=tap_button if tap else None,
+            tap_button=_sensor_to_button(tap_sensor) if tap else None,
+            aim_sensor=aim_sensor,
+            tap_sensor=tap_sensor if tap else None,
             aim=float(max(-1.0, min(1.0, aim))),
             strike=float(strike),
         )
 
 
-def _button_aim_score(button: int) -> float:
-    """Map button to -1..1 around the ring (1 at top -> 0-ish via angle)."""
-    # Use cos of encoder angle so top (~button 1) is near 0 lateral, right positive.
-    angle = math.radians((button - 1) * 45.0 - 90.0)
-    return math.cos(angle)
+def _sensor_aim_score(sensor: str) -> float:
+    """Map sensor to -1..1 lateral (cos of angle; +X right)."""
+    x, _y = sensor_xy(sensor)
+    # Normalize roughly to -1..1 using ring radius.
+    return max(-1.0, min(1.0, x / 0.86))
 
 
-def _pick_aim_button(
+def _pick_aim_sensor(
     aim: float,
     prefer: tuple[int, ...] | None,
-    active: list[Note],
-) -> int | None:
+    active: list[tuple[Note, str]],
+) -> str | None:
     if active:
         if prefer is not None:
-            sector = [n for n in active if n.button in prefer]
-            pool = sector or active
+            sector = [
+                (n, s)
+                for n, s in active
+                if _sensor_to_button(s) in prefer or sensor_side(s) == ("L" if prefer is LEFT_BUTTONS else "R")
+            ]
+            # Prefer A-buttons in the sector when present; else all active.
+            a_sector = [(n, s) for n, s in active if _sensor_to_button(s) in prefer]
+            pool = a_sector or sector or active
         else:
             pool = active
-        return min(pool, key=lambda n: (n.t, abs(_button_aim_score(n.button) - aim))).button
-    # No approaching notes: best matching button by aim alone.
+        return min(pool, key=lambda ns: (ns[0].t, abs(_sensor_aim_score(ns[1]) - aim)))[1]
     buttons = prefer if prefer is not None else tuple(range(1, 9))
-    return min(buttons, key=lambda b: abs(_button_aim_score(b) - aim))
+    best_b = min(buttons, key=lambda b: abs(_sensor_aim_score(button_to_sensor(b)) - aim))
+    return button_to_sensor(best_b)
 
 
-def _pick_tap_button(
-    aim_button: int | None,
+def _pick_tap_sensor(
+    aim_sensor: str | None,
     prefer: tuple[int, ...] | None,
-    active: list[Note],
+    active: list[tuple[Note, str]],
     aim: float,
-) -> int | None:
+) -> str | None:
     if not active:
-        return aim_button
-    if aim_button is not None and any(n.button == aim_button for n in active):
-        return aim_button
-    return _pick_aim_button(aim, prefer, active)
+        return aim_sensor
+    if aim_sensor is not None and any(s == aim_sensor for _n, s in active):
+        return aim_sensor
+    return _pick_aim_sensor(aim, prefer, active)
 
 
-def _best_note_for_aim(
-    notes: list[Note],
-    aim_button: int | None,
+def _best_target_for_aim(
+    targets: list[tuple[Note, str]],
+    aim_sensor: str | None,
     prefer: tuple[int, ...] | None,
     aim: float,
-) -> Note | None:
-    if not notes:
+) -> tuple[Note, str] | None:
+    if not targets:
         return None
-    if aim_button is not None:
-        matched = [n for n in notes if n.button == aim_button]
+    if aim_sensor is not None:
+        matched = [ns for ns in targets if ns[1] == aim_sensor]
         if matched:
-            return min(matched, key=lambda n: abs(n.t))
+            return min(matched, key=lambda ns: abs(ns[0].t - 0.0))
     if prefer is not None:
-        sector = [n for n in notes if n.button in prefer]
+        sector = [ns for ns in targets if _sensor_to_button(ns[1]) in prefer]
         if sector:
-            return min(sector, key=lambda n: (abs(n.t), abs(_button_aim_score(n.button) - aim)))
-    return min(notes, key=lambda n: (abs(n.t), abs(_button_aim_score(n.button) - aim)))
+            return min(
+                sector,
+                key=lambda ns: (abs(ns[0].t), abs(_sensor_aim_score(ns[1]) - aim)),
+            )
+    return min(targets, key=lambda ns: (abs(ns[0].t), abs(_sensor_aim_score(ns[1]) - aim)))
 
 
 # Re-export for callers that want geometric side with aim sectors.
+button_side = sensor_side
+
 __all__ = [
     "ActionDecoder",
     "DecodeResult",
