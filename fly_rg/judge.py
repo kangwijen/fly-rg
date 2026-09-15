@@ -175,6 +175,8 @@ class HitEvent:
     note_index: int
     sensor: str
     timing: Timing | None = None
+    # press minus note, milliseconds; negative is FAST/early.
+    error_ms: float | None = None
 
 
 @dataclass
@@ -258,6 +260,7 @@ class Judge:
                     note_index=best_i,
                     sensor=sensor,
                     timing=timing,
+                    error_ms=_error_ms(note.t, t),
                 )
             # Head accepted; body still in progress (not a final score event yet).
             return HitEvent(
@@ -267,6 +270,7 @@ class Judge:
                 note_index=best_i,
                 sensor=sensor,
                 timing=timing,
+                error_ms=_error_ms(note.t, t),
             )
 
         self._apply(best_i, judgment)
@@ -277,6 +281,7 @@ class Judge:
             note_index=best_i,
             sensor=sensor,
             timing=timing,
+            error_ms=_error_ms(note.t, t),
         )
 
     def press_button(self, button: int, t: float) -> HitEvent | None:
@@ -301,6 +306,7 @@ class Judge:
                                 note_index=i,
                                 sensor=note.slide.end_sensor,
                                 timing=None,
+                                error_ms=_error_ms(note.slide.end_t, now),
                             )
                         )
                     continue
@@ -314,6 +320,7 @@ class Judge:
                             note_index=i,
                             sensor=note.sensor,
                             timing=None,
+                            error_ms=_error_ms(note.t, now),
                         )
                     )
                 continue
@@ -328,6 +335,7 @@ class Judge:
                         note_index=i,
                         sensor=note.sensor,
                         timing=None,
+                        error_ms=_error_ms(note.t, now),
                     )
                 )
         return events
@@ -485,6 +493,7 @@ class Judge:
                 note_index=index,
                 sensor=sensor,
                 timing=timing,
+                error_ms=_error_ms(note.slide.end_t, t) if judgment == "miss" else None,
             )
         # Intermediate waypoint: report head judgment echo without scoring again.
         return HitEvent(
@@ -520,6 +529,10 @@ class Judge:
         else:
             _exhaustive: Never = judgment
             raise ValueError(f"unknown judgment: {_exhaustive}")
+
+
+def _error_ms(note_t: float, press_t: float) -> float:
+    return (press_t - note_t) * 1000.0
 
 
 def _late_window(note: Note) -> float:

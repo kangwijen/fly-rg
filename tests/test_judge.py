@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fly_rg.judge import GOOD, Judge
 from fly_rg.schema import Note, SlideInfo
 
@@ -43,10 +45,50 @@ def test_dx_windows():
     assert len(misses) == 1
     assert misses[0].judgment == "miss"
     assert misses[0].timing is None
+    assert misses[0].error_ms == pytest.approx(160.0, abs=0.05)
 
     j = Judge([Note(t=1.0, type="touch", sensor="B5")])
     h = j.press("B5", 1.160)
     assert h is not None and h.judgment == "perfect" and h.timing == "late"
+
+
+def test_hit_error_ms_fast_late_and_critical():
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 1.0)
+    assert h is not None
+    assert h.error_ms == pytest.approx(0.0, abs=0.05)
+
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 0.980)
+    assert h is not None
+    assert h.error_ms == pytest.approx(-20.0, abs=0.05)
+
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 1.020)
+    assert h is not None
+    assert h.error_ms == pytest.approx(20.0, abs=0.05)
+
+
+def test_slide_waypoint_omits_error_ms():
+    path = ("A1", "B1", "A5")
+    j = Judge(
+        [
+            Note(
+                t=1.0,
+                button=1,
+                type="slide",
+                sensor="A1",
+                end=2.0,
+                slide=SlideInfo(shape="-", end_sensor="A5", path=path, end_t=2.0),
+            )
+        ]
+    )
+    head = j.press("A1", 0.980)
+    assert head is not None
+    assert head.error_ms == pytest.approx(-20.0, abs=0.05)
+    waypoint = j.press("B1", 1.2)
+    assert waypoint is not None
+    assert waypoint.error_ms is None
 
     j = Judge([Note(t=1.0, type="touch", sensor="B5")])
     h = j.press("B5", 1.0)

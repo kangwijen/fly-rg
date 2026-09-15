@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from fly_rg.encoder import CHASE_TYPES, NoteEncoder
 from fly_rg.schema import Note, SlideInfo
 from fly_rg.sensors import sensor_xy
@@ -292,3 +294,42 @@ def test_matched_notes_are_skipped():
     )
     assert result.target_l is None
     assert result.drive["growthL"] == 0.0
+
+
+def test_e_touch_keeps_closing_from_5cm_offset():
+    notes = [Note(t=1.0, type="touch", sensor="E1")]
+    enc = NoteEncoder(mock=True)
+    ex, ey = sensor_xy("E1")
+    dist = math.hypot(ex, ey)
+    hx = ex + 0.05 * ex / dist
+    hy = ey + 0.05 * ey / dist
+    result = enc.encode(
+        notes,
+        0.5,
+        look_ahead_s=1.0,
+        dt=0.004,
+        hand_l=(hx, hy),
+        hand_r=sensor_xy("A3"),
+    )
+    assert result.target_l == "E1"
+    closing = (
+        result.drive["eastL"]
+        + result.drive["westL"]
+        + result.drive["northL"]
+        + result.drive["southL"]
+    )
+    assert closing > 0.0
+
+
+def test_touch_stays_assigned_200ms_late():
+    notes = [Note(t=1.0, type="touch", sensor="E1")]
+    enc = NoteEncoder(mock=True)
+    result = enc.encode(
+        notes,
+        1.20,
+        look_ahead_s=1.0,
+        dt=0.004,
+        hand_l=sensor_xy("E1"),
+        hand_r=sensor_xy("A3"),
+    )
+    assert result.target_l == "E1"

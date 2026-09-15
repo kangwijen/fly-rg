@@ -172,25 +172,18 @@ export class MediaPlayer {
       return;
     }
 
-    if (this.audio.src && !this.audio.paused) {
-      const audioT = this.audio.currentTime;
-      // Forward-only: never rewind when the sim lags the audio clock.
-      if (t - audioT > 0.25) {
-        this.audio.currentTime = Math.max(0, t);
-      }
-    } else if (this.audio.src && this.audio.paused && t > 0.05) {
+    // After the first lock, let media run at 1x. Seeking here used to jump the
+    // song whenever the sim caught up in bursts.
+    if (this.audio.src && this.audio.paused && t > 0.05) {
       void this.audio.play().catch(() => undefined);
     }
-    if (this.video.src) {
-      if (this.video.paused && t > 0.05 && t < (this.video.duration || Infinity) - 0.05) {
-        void this.video.play().catch(() => undefined);
-      }
-      if (!this.video.paused) {
-        const videoT = this.video.currentTime;
-        if (t - videoT > 0.25) {
-          this.video.currentTime = Math.max(0, t);
-        }
-      }
+    if (
+      this.video.src &&
+      this.video.paused &&
+      t > 0.05 &&
+      t < (this.video.duration || Infinity) - 0.05
+    ) {
+      void this.video.play().catch(() => undefined);
     }
   }
 

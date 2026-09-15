@@ -109,6 +109,31 @@ function notePath(note: ActiveNote): string[] | null {
   return null;
 }
 
+function wrapButton(button: number, delta: number): number {
+  return ((((button - 1 + delta) % 8) + 8) % 8) + 1;
+}
+
+function isWifiSlide(note: ActiveNote): boolean {
+  return noteKind(note) === "slide" && note.slide?.shape === "w";
+}
+
+function wifiStartButton(note: ActiveNote): number | null {
+  if (note.button != null && note.button >= 1 && note.button <= 8) {
+    return note.button;
+  }
+  const path = notePath(note);
+  const head = path?.[0] ?? resolveNoteSensor(note);
+  if (head.length >= 2 && head[0] === "A") {
+    const idx = Number.parseInt(head.slice(1), 10);
+    if (idx >= 1 && idx <= 8) return idx;
+  }
+  return null;
+}
+
+function lerpPt(a: Pt, b: Pt, t: number): Pt {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
 function padPoint(sensor: string): Pt {
   const { x, y } = sensorXY(sensor);
   return toCanvas(x, y, CENTER, OUTER_R);
@@ -417,7 +442,9 @@ export class RingDisplay {
     this.drawAllSlidePaths();
     this.drawEachLines();
 
+    const wifiDrawn = this.drawWifiGroups(nowMs);
     for (const note of this.active) {
+      if (wifiDrawn.has(note)) continue;
       this.drawNote(note, nowMs);
     }
 
@@ -925,6 +952,112 @@ export class RingDisplay {
         throw new Error(`unhandled note kind ${_never}`);
       }
     }
+  }
+
+  private drawWifiGroups(nowMs: number): Set<ActiveNote> {
+    const drawn = new Set<ActiveNote>();
+    const groups = new Map<string, ActiveNote[]>();
+    for (const note of this.active) {
+      if (!isWifiSlide(note)) continue;
+      const start = wifiStartButton(note);
+      if (start == null) continue;
+      const key = `${note.t}|${start}`;
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(note);
+      else groups.set(key, [note]);
+    }
+    for (const notes of groups.values()) {
+      const start = wifiStartButton(notes[0]);
+      if (start == null) continue;
+      this.drawWifiFan(notes, start, nowMs);
+      for (const note of notes) drawn.add(note);
+    }
+    return drawn;
+  }
+
+  private drawWifiFan(notes: ActiveNote[], startButton: number, nowMs: number): void {
+    const start = landingPoint(buttonToSensor(startButton));
+    const endL = landingPoint(buttonToSensor(wrapButton(startButton, -3)));
+    const endC = landingPoint(buttonToSensor(wrapButton(startButton, 4)));
+    const endR = landingPoint(buttonToSensor(wrapButton(startButton, 3)));
+    const ends = [endL, endC, endR];
+    const lead = notes.reduce((a, b) => (a.progress >= b.progress ? a : b));
+    const fill = noteColor(lead);
+    const ring = noteRing(lead);
+    const raw = Math.min(1, Math.max(0, lead.progress));
+    this.drawWifiTrail(start, endL, endC, endR, fill, raw);
+
+    const spin = (nowMs / 1000) * Math.PI;
+    if (raw < 0.5) {
+      const u = raw / 0.5;
+      const head = {
+        x: CENTER + (start.x - CENTER) * u,
+        y: CENTER + (start.y - CENTER) * u,
+      };
+      const r = NOTE_R * (0.7 + 0.3 * u);
+      this.drawStar(head.x, head.y, r, fill, ring, lead, spin);
+      this.drawNoteMarks(lead, head.x, head.y, r);
+      return;
+    }
+
+    const pathProg = (raw - 0.5) / 0.5;
+    const endButtons = [
+      wrapButton(startButton, -3),
+      wrapButton(startButton, 4),
+      wrapButton(startButton, 3),
+    ];
+    for (let i = 0; i < 3; i++) {
+      const end = ends[i];
+      const lane = notes.find((n) => {
+        const path = notePath(n);
+        return path?.[path.length - 1] === `A${endButtons[i]}`;
+      });
+      const src = lane ?? lead;
+      const travel = lane
+        ? Math.min(1, Math.max(0, (lane.progress - 0.5) / 0.5))
+        : pathProg;
+      const pos = lerpPt(start, end, travel);
+      const ang = Math.atan2(end.y - start.y, end.x - start.x);
+      this.drawStar(pos.x, pos.y, NOTE_R, fill, noteRing(src), src, ang + spin * 0.15);
+    }
+  }
+
+  private drawWifiTrail(
+    start: Pt,
+    endL: Pt,
+    endC: Pt,
+    endR: Pt,
+    fill: string,
+    raw: number,
+  ): void {
+    const { ctx } = this;
+    const travel = raw < 0.5 ? 0 : (raw - 0.5) / 0.5;
+    const fade = raw < 0.5 ? Math.max(0.2, raw / 0.5) : 1;
+    const bars = 11;
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    for (let i = 0; i < bars; i++) {
+      const t = (i + 0.5) / bars;
+      const tip = lerpPt(start, endC, Math.min(1, t + 0.045));
+      const left = lerpPt(start, endL, t);
+      const right = lerpPt(start, endR, t);
+      const back = lerpPt(start, endC, Math.max(0, t - 0.028));
+      const passed = travel > t;
+      ctx.globalAlpha = fade * (passed ? 0.28 : 0.92);
+      ctx.beginPath();
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(left.x, left.y);
+      ctx.lineTo(back.x, back.y);
+      ctx.lineTo(right.x, right.y);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.55)";
+      ctx.lineWidth = 1.4 * S;
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   private drawSlideNote(note: ActiveNote, nowMs: number, fill: string, ring: string): void {

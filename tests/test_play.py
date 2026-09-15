@@ -6,19 +6,25 @@ import argparse
 import asyncio
 import time
 
+import pytest
+
 from fly_rg.brain_backend import MockBrain
 from fly_rg.decoder import ActionDecoder
 from fly_rg.encoder import ON_PAD_TTH_S, NoteEncoder
-from fly_rg.judge import Judge
+from fly_rg.judge import HitEvent, Judge
 from fly_rg.neuron_view import NeuronAtlas
 from fly_rg.play import (
+    MAX_STEP_DT_S,
     STATE_PERIOD_S,
     Session,
     _contact_sensors,
+    _format_judgment_log,
     _pace,
     _play_once,
     _press_sensor,
     _state_due,
+    _step_dt,
+    _wall_sim_t,
     _want_press,
 )
 from fly_rg.protocol import chart_message
@@ -79,12 +85,20 @@ def test_state_period_is_16ms():
     assert STATE_PERIOD_S == 0.016
 
 
-def test_want_press_slide_target_without_tap():
+def test_want_press_slide_target_still_waits_for_tth():
+    assert not _want_press(
+        tap=False,
+        occupancy="B1",
+        intended="B1",
+        slide_target="B1",
+        tth=0.20,
+    )
     assert _want_press(
         tap=False,
         occupancy="B1",
         intended="B1",
         slide_target="B1",
+        tth=0.0,
     )
 
 
@@ -112,12 +126,23 @@ def test_want_press_wrong_pad():
     )
 
 
+def test_want_press_tap_does_not_fire_150ms_early():
+    assert not _want_press(
+        tap=True,
+        occupancy="A6",
+        intended="A6",
+        slide_target=None,
+        tth=0.150,
+    )
+
+
 def test_want_press_correct_tap():
     assert _want_press(
         tap=True,
         occupancy="A6",
         intended="A6",
         slide_target=None,
+        tth=ON_PAD_TTH_S,
     )
 
 
@@ -217,6 +242,77 @@ def test_chart_message_omits_active_when_not_passed():
     msg = chart_message(chart)
     assert "active" not in msg
     assert "active_sensors" not in msg
+
+
+def test_format_judgment_log_fast_late_and_skip_waypoint():
+    note = Note(t=1.0, button=1, type="tap", sensor="A1")
+    fast = HitEvent(
+        t=0.980,
+        button=1,
+        judgment="perfect",
+        note_index=0,
+        sensor="A1",
+        timing="fast",
+        error_ms=-20.0,
+    )
+    late = HitEvent(
+        t=1.020,
+        button=1,
+        judgment="perfect",
+        note_index=0,
+        sensor="A1",
+        timing="late",
+        error_ms=20.0,
+    )
+    crit = HitEvent(
+        t=1.0,
+        button=1,
+        judgment="critical",
+        note_index=0,
+        sensor="A1",
+        error_ms=0.0,
+    )
+    waypoint = HitEvent(
+        t=1.2,
+        button=1,
+        judgment="perfect",
+        note_index=0,
+        sensor="B1",
+        error_ms=None,
+    )
+    missed = HitEvent(
+        t=1.16,
+        button=1,
+        judgment="miss",
+        note_index=0,
+        sensor="A1",
+        error_ms=160.0,
+    )
+    assert _format_judgment_log(fast, note) == "judge perfect FAST 20.0ms A1 tap"
+    assert _format_judgment_log(late, note) == "judge perfect LATE 20.0ms A1 tap"
+    assert _format_judgment_log(crit, note) == "judge critical 0.0ms A1 tap"
+    assert _format_judgment_log(waypoint, note) is None
+    assert _format_judgment_log(missed, note) == "judge miss LATE 160.0ms A1 tap"
+
+
+def test_step_dt_uses_wall_gap_without_catchup_burst():
+    assert _step_dt(0.0, 0.0, 0.004) == 0.004
+    assert _step_dt(1.0, 1.004, 0.004) == pytest.approx(0.004)
+    assert _step_dt(1.0, 1.020, 0.004) == pytest.approx(0.020)
+    assert _step_dt(1.0, 1.5, 0.004) == MAX_STEP_DT_S
+
+
+def test_wall_sim_t_tracks_elapsed(monkeypatch) -> None:
+    clock = {"t": 10.0}
+
+    def fake_counter() -> float:
+        return clock["t"]
+
+    monkeypatch.setattr(time, "perf_counter", fake_counter)
+    assert _wall_sim_t(10.0, 1.0) == pytest.approx(0.0)
+    clock["t"] = 10.25
+    assert _wall_sim_t(10.0, 1.0) == pytest.approx(0.25)
+    assert _wall_sim_t(10.0, 2.0) == pytest.approx(0.50)
 
 
 def test_pace_yields_when_clock_is_behind():

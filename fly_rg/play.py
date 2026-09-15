@@ -15,8 +15,8 @@ from websockets.asyncio.server import broadcast, serve
 from fly_rg.brain_backend import MockBrain, make_brain
 from fly_rg.chart import list_difficulties, parse_simai_subset
 from fly_rg.decoder import ActionDecoder
-from fly_rg.encoder import ON_PAD_TTH_S, NoteEncoder
-from fly_rg.judge import Judge
+from fly_rg.encoder import DEADZONE, ON_PAD_TTH_S, NoteEncoder
+from fly_rg.judge import HitEvent, Judge
 from fly_rg.neuron_view import NeuronAtlas
 from fly_rg.protocol import (
     chart_message,
@@ -28,14 +28,14 @@ from fly_rg.protocol import (
     state_message,
 )
 from fly_rg.resources import RESOURCE_PERIOD_S, ResourceMonitor
-from fly_rg.schema import Chart
+from fly_rg.schema import Chart, Note
 from fly_rg.sensors import nearest_sensor
 
 STATE_PERIOD_S = 0.016
 SPIKE_PERIOD_S = 0.050
-LOG_PERIOD_S = 0.5
 BRAIN_WARMUP = 16
 OVERRUN_MEAN_S = 0.008
+MAX_STEP_DT_S = 0.050
 
 
 @dataclass
@@ -67,15 +67,14 @@ def _want_press(
     slide_target: str | None,
     tth: float | None = None,
 ) -> bool:
+    del tap, slide_target
     if occupancy is None or intended is None:
         return False
     if occupancy != intended:
         return False
-    if slide_target is not None and occupancy == slide_target:
-        return True
-    if tap:
-        return True
-    return tth is not None and tth <= ON_PAD_TTH_S
+    if tth is None:
+        return False
+    return tth <= ON_PAD_TTH_S
 
 
 def _contact_sensors(judge: Judge, now: float) -> set[str]:
@@ -116,6 +115,38 @@ async def _resource_loop(session: Session, monitor: ResourceMonitor) -> None:
 async def _pace(delay: float) -> None:
     """Always yield so Stop, resources, and WS flushes can run."""
     await asyncio.sleep(delay if delay > 0.0 else 0.0)
+
+
+def _wall_sim_t(t0: float, speed: float) -> float:
+    return (time.perf_counter() - t0) * max(speed, 1e-9)
+
+
+def _step_dt(prev_t: float, sim_t: float, motor_dt: float) -> float:
+    raw = sim_t - prev_t
+    if raw <= 1e-12:
+        return motor_dt
+    return min(raw, MAX_STEP_DT_S)
+
+
+def _format_judgment_log(hit: HitEvent, note: Note) -> str | None:
+    if hit.error_ms is None and hit.judgment != "miss":
+        return None
+    bits = [f"judge {hit.judgment}"]
+    if hit.error_ms is not None:
+        if hit.error_ms < -0.05:
+            bits.append("FAST")
+        elif hit.error_ms > 0.05:
+            bits.append("LATE")
+        bits.append(f"{abs(hit.error_ms):.1f}ms")
+    bits.append(hit.sensor)
+    bits.append(note.type)
+    return " ".join(bits)
+
+
+def _log_judgment(hit: HitEvent, notes: list[Note]) -> None:
+    line = _format_judgment_log(hit, notes[hit.note_index])
+    if line is not None:
+        print(line, flush=True)
 
 
 def _state_due(
@@ -178,6 +209,7 @@ async def _play_once(
         return
     t0 = time.perf_counter()
     sim_t = 0.0
+    prev_t = 0.0
     step_i = 0
     motor_dt = float(args.dt)
     brain_dt = motor_dt
@@ -188,29 +220,30 @@ async def _play_once(
     last_fired: list = []
     overrun_logged = False
     step_times: list[float] = []
-    last_brain_ms = 0.0
-    last_log_t = -1e9
     brain_steps = 0
+    speed = max(args.speed, 1e-9)
 
     print(
         f"playing {chart.title!r} notes={len(chart.notes)} end={end_t:.1f}s",
         flush=True,
     )
 
-    while sim_t <= end_t:
+    while True:
         if session.stop_event.is_set() or not session.clients:
             print("play stopped", flush=True)
             return
 
-        target = t0 + (sim_t / max(args.speed, 1e-9))
-        delay = target - time.perf_counter()
-        await _pace(delay)
+        sim_t = _wall_sim_t(t0, speed)
+        if sim_t > end_t:
+            break
+        step_dt = _step_dt(prev_t, sim_t, motor_dt)
+        prev_t = sim_t
 
         enc = encoder.encode(
             chart.notes,
             sim_t,
             look_ahead_s=args.look_ahead,
-            dt=motor_dt,
+            dt=step_dt,
             slide_next=judge.slide_next,
             matched=judge.matched,
             hand_l=decoder.hand_l,
@@ -226,15 +259,8 @@ async def _play_once(
                 fired = brain.step(inject=enc.inject)
                 last_drive = enc.drive
             elapsed = time.perf_counter() - t_brain
-            last_brain_ms = elapsed * 1000.0
             if not is_mock:
                 brain_steps += 1
-                if brain_steps <= 5 or brain_steps == BRAIN_WARMUP:
-                    print(
-                        f"brain step n={brain_steps} {last_brain_ms:.1f}ms "
-                        f"(motor dt={motor_dt * 1000:.1f}ms)",
-                        flush=True,
-                    )
                 if brain_steps > BRAIN_WARMUP:
                     step_times.append(elapsed)
                     if len(step_times) > 8:
@@ -257,12 +283,13 @@ async def _play_once(
         fired_list = last_fired
         dec = decoder.decode(
             sim_t,
-            dt=motor_dt,
+            dt=step_dt,
             drive=last_drive,
             contact=_contact_sensors(judge, sim_t),
         )
 
         for miss in judge.auto_miss(sim_t):
+            _log_judgment(miss, chart.notes)
             emit(
                 hit_message(
                     t=miss.t,
@@ -292,6 +319,7 @@ async def _play_once(
         if press_l and occupancy_l is not None:
             hit = judge.press(occupancy_l, sim_t)
             if hit is not None:
+                _log_judgment(hit, chart.notes)
                 emit(
                     hit_message(
                         t=hit.t,
@@ -304,6 +332,7 @@ async def _play_once(
         if press_r and occupancy_r is not None:
             hit = judge.press(occupancy_r, sim_t)
             if hit is not None:
+                _log_judgment(hit, chart.notes)
                 emit(
                     hit_message(
                         t=hit.t,
@@ -334,26 +363,6 @@ async def _play_once(
             step=step_i,
         )
         step_i += 1
-
-        if sim_t + 1e-12 >= last_log_t + LOG_PERIOD_S:
-            last_log_t = sim_t
-            tth_l = f"{enc.tth_l:.3f}" if enc.tth_l is not None else "-"
-            tth_r = f"{enc.tth_r:.3f}" if enc.tth_r is not None else "-"
-            slide_l = enc.slide_l
-            slide_r = enc.slide_r
-            print(
-                f"t={sim_t:.2f}s brain={last_brain_ms:.1f}ms/"
-                f"{brain_dt * 1000:.0f}ms "
-                f"L={dec.hand_l_sensor}->{enc.target_l} tth={tth_l} "
-                f"w={dec.omega_l:.2f} tap={int(press_l)} "
-                f"R={dec.hand_r_sensor}->{enc.target_r} tth={tth_r} "
-                f"w={dec.omega_r:.2f} tap={int(press_r)} "
-                f"growthL={enc.drive.get('growthL', 0.0):.2f} "
-                f"growthR={enc.drive.get('growthR', 0.0):.2f} "
-                f"slide={slide_l}/{slide_r} "
-                f"C={judge.score.critical} M={judge.score.miss}",
-                flush=True,
-            )
 
         if _state_due(
             sim_t,
@@ -398,7 +407,8 @@ async def _play_once(
                 )
             )
 
-        sim_t += motor_dt
+        next_wall = t0 + (sim_t + motor_dt) / speed
+        await _pace(next_wall - time.perf_counter())
 
     emit(end_message(judge.score.to_dict()))
     print(
@@ -417,6 +427,7 @@ async def run_play(args: argparse.Namespace) -> None:
         is_mock = True
     print(
         f"brain={'mock' if is_mock else 'flybrain'} device={args.device} "
+        f"press_gate={ON_PAD_TTH_S * 1000:.0f}ms deadzone={DEADZONE} "
         f"(upload a Majdata zip from the web UI)",
         flush=True,
     )

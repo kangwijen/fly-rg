@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Never, Protocol
 
 from fly_rg.decoder import STEER_TYPES, TAP_TYPES, V_MAX
-from fly_rg.judge import GOOD
+from fly_rg.judge import GOOD, TOUCH_GOOD
 from fly_rg.schema import Note
 from fly_rg.sensors import (
     REST_HOME,
@@ -61,9 +61,9 @@ CHASE_BASE = 0.7
 CHASE_GAIN = 0.35
 GROWTH_TAU_S = 0.020
 FOVEA_SIGMA = 0.30
-DEADZONE = 0.08
-T_GO_FLOOR_S = 0.04
-ON_PAD_TTH_S = 0.03
+DEADZONE = 0.028
+T_GO_FLOOR_S = 0.016
+ON_PAD_TTH_S = 0.008
 
 
 class BrainCells(Protocol):
@@ -136,9 +136,14 @@ def note_window_tth(
         if note.t - look_ahead_s <= now <= end:
             return max(note.t - now, 0.0)
         return None
-    if nt == "tap" or nt == "touch":
+    if nt == "tap":
         tth = note.t - now
         if -GOOD <= tth <= look_ahead_s:
+            return max(tth, 0.0)
+        return None
+    if nt == "touch":
+        tth = note.t - now
+        if -TOUCH_GOOD <= tth <= look_ahead_s:
             return max(tth, 0.0)
         return None
     _exhaustive: Never = nt
