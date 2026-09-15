@@ -1,0 +1,200 @@
+:root {
+  --bg0: #05070c;
+  --bg1: #0a1220;
+  --ink: #d7e6f2;
+  --muted: #7f94a8;
+  --cyan: #3de0d0;
+  --magenta: #e24f9c;
+  --amber: #f0b429;
+  --good: #5ad67a;
+  --miss: #ff5a6a;
+  --panel: rgba(6, 10, 18, 0.72);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 20%, #132038 0%, var(--bg0) 62%);
+  color: var(--ink);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+#scene {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 1.25rem 1.5rem;
+}
+
+.hud-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+.hud-title-block {
+  min-width: 0;
+}
+
+.hud-brand {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: var(--cyan);
+}
+
+.hud-title {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 600;
+  font-size: clamp(1.2rem, 2.4vw, 1.8rem);
+  line-height: 1.15;
+  margin-top: 0.35rem;
+}
+
+.hud-artist {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.hud-status {
+  text-align: right;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.hud-status[data-state="open"] {
+  color: var(--cyan);
+}
+
+.hud-status[data-state="connecting"],
+.hud-status[data-state="closed"] {
+  color: var(--amber);
+}
+
+.hud-status[data-state="error"] {
+  color: var(--miss);
+}
+
+.hud-center {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding-top: 0.5rem;
+}
+
+.hud-score {
+  text-align: right;
+}
+
+.hud-combo {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hud-combo span {
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 500;
+  margin-bottom: 0.2rem;
+}
+
+.hud-accuracy {
+  margin-top: 0.45rem;
+  color: var(--cyan);
+  font-size: 0.95rem;
+}
+
+.hud-judgments {
+  margin-top: 0.85rem;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.hud-judgments b {
+  color: var(--ink);
+  font-weight: 500;
+  display: inline-block;
+  min-width: 3.2rem;
+  text-align: right;
+}
+
+.hud-bottom {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.25rem;
+}
+
+.hud-drives {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(7rem, 9rem));
+  gap: 0.65rem 1rem;
+  background: var(--panel);
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(61, 224, 208, 0.18);
+}
+
+.drive-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.drive-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.drive-row {
+  display: grid;
+  grid-template-columns: 0.8rem 1fr;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+
+.drive-bar {
+  height: 0.35rem;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.drive-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--cyan), var(--magenta));
+  transform-origin: left center;
+}
+
+.drive-fill.threat {
+  background: linear-gradient(90deg, var(--amber), var(--miss));
+}

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fly-rg"
+version = "0.1.0"
+description = "Closed-loop maimai rhythm game driven by the flybrain connectome"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+brain = ["flybrain>=0.1.0"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+fly-rg = "fly_rg.play:main"
+
+[tool.setuptools.packages.find]
+include = ["fly_rg*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MajSimaiExport</RootNamespace>
+    <AssemblyName>majsimai_export</AssemblyName>
+    <!-- Default search path for an optional local MajSimai clone (not required to build). -->
+    <MajSimaiPath Condition="'$(MajSimaiPath)' == ''">$(MSBuildThisFileDirectory)..\..\..\MajSimai</MajSimaiPath>
+  </PropertyGroup>
+
+  <!--
+    Full MajSimai: clone https://github.com/TeamMajdata/MajSimai beside this repo (or set MajSimaiPath),
+    then uncomment the ItemGroup below and wire Program.cs to call MajSimai instead of SubsetSimaiExporter.
+    Do not vendor MajSimai sources into fly-rg (no license file upstream).
+  -->
+  <!--
+  <ItemGroup Condition="Exists('$(MajSimaiPath)\MajSimai.csproj')">
+    <ProjectReference Include="$(MajSimaiPath)\MajSimai.csproj" />
+  </ItemGroup>
+  -->
+
+</Project>
