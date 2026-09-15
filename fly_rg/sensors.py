@@ -1,4 +1,10 @@
-"""maimai DX touch sensor geometry (Majdata TouchDrop.GetAreaPos)."""
+"""maimai DX touch sensor geometry (Majdata TouchDrop.GetAreaPos).
+
+Layout (unit disk, y up):
+  D1/E1 at top (12 o'clock); A1/B1 at ~1:30.
+  Outer ring alternates A and D wedges; E diamonds inset from D;
+  B octagons inset from A; C split C1 (right) / C2 (left).
+"""
 
 from __future__ import annotations
 
@@ -7,11 +13,11 @@ from typing import Literal
 
 Area = Literal["A", "B", "C", "D", "E"]
 
-# Normalized radii relative to outer ring (A/D).
+# Radii of zone centers (relative to outer playfield).
 RADIUS = {
     "C": 0.0,
-    "B": 0.48,
-    "E": 0.62,
+    "B": 0.40,
+    "E": 0.58,
     "A": 0.86,
     "D": 0.86,
 }
@@ -48,20 +54,25 @@ def button_to_sensor(button: int) -> str:
 
 
 def sensor_angle_rad(area: Area, index: int = 1) -> float:
-    """Math angle (radians): 0 = +X, pi/2 = +Y (up). Canvas Y is flipped by callers."""
+    """Math angle (radians): 0 = +X, pi/2 = +Y (up)."""
     if area == "C":
         return 0.0
     if area in ("A", "B"):
-        # Majdata: (-index * pi/4) + (5*pi/8)
+        # Majdata: (-index * pi/4) + (5*pi/8)  -> A1/B1 at NE
         return (-index * (math.pi / 4.0)) + (5.0 * math.pi / 8.0)
     if area in ("D", "E"):
-        # Majdata: (-index * pi/4) + (6*pi/8)  -> D1/E1 at top (+Y)
+        # Majdata: (-index * pi/4) + (6*pi/8)  -> D1/E1 at top
         return (-index * (math.pi / 4.0)) + (6.0 * math.pi / 8.0)
     raise ValueError(f"unknown area {area}")
 
 
 def sensor_xy(sensor: str) -> tuple[float, float]:
-    """Unit disk coords: x right, y up, radius RADIUS[area]. C at origin."""
+    """Unit disk coords: x right, y up. C at origin; C1 right, C2 left."""
+    s = sensor.strip().upper()
+    if s == "C1":
+        return 0.08, 0.0
+    if s == "C2":
+        return -0.08, 0.0
     area, index = parse_sensor(sensor)
     if area == "C":
         return 0.0, 0.0

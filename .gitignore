@@ -17,3 +17,4 @@ tools/majsimai_export/obj/
 .DS_Store
 charts/
 *.log
+docs/

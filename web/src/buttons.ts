@@ -188,10 +188,11 @@ export class ButtonRing {
     const mat = new THREE.SpriteMaterial({
       map: tex,
       transparent: true,
-      depthTest: true,
+      depthTest: false,
+      depthWrite: false,
     });
     const spr = new THREE.Sprite(mat);
-    spr.scale.set(0.18, 0.09, 1);
+    spr.scale.set(0.28, 0.14, 1);
     return spr;
   }
 }

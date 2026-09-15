@@ -2,9 +2,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Cabinet } from "./cabinet";
 import { FruitFly } from "./fly";
-import type { Pose } from "./protocol";
+import type { ActiveNote, Pose } from "./protocol";
 import { RingDisplay } from "./ring";
-import { buttonToSensor, sensorXY } from "./sensors";
+import { buttonToSensor, pathPoint, sensorXY } from "./sensors";
 
 export class ArcadeScene {
   readonly ring = new RingDisplay();
@@ -21,6 +21,7 @@ export class ArcadeScene {
   private viewport: HTMLElement;
   private resizeObserver: ResizeObserver;
   private aimSensor: string | null = "A5";
+  private activeNotes: ActiveNote[] = [];
   private readonly _aimWorld = new THREE.Vector3();
   private readonly _normal = new THREE.Vector3();
   private readonly _lookAt = new THREE.Vector3();
@@ -111,6 +112,10 @@ export class ArcadeScene {
     this.pose = pose;
   }
 
+  setActiveNotes(notes: ActiveNote[]): void {
+    this.activeNotes = notes;
+  }
+
   setAimSensor(sensor: string | null): void {
     this.aimSensor = sensor;
     if (sensor) this.fly.setAimSensor(sensor);
@@ -150,6 +155,52 @@ export class ArcadeScene {
     this.fly.setScreenNormal(this._normal);
   }
 
+  /** Continuous tip target from the most urgent active note / slide. */
+  private tipUnitXY(): { x: number; y: number } | null {
+    const notes = this.activeNotes;
+    if (notes.length === 0) {
+      if (!this.aimSensor) return null;
+      return sensorXY(this.aimSensor);
+    }
+
+    // Prefer slides in travel, then nearest-to-hit notes.
+    let best: ActiveNote | null = null;
+    let bestScore = -Infinity;
+    for (const note of notes) {
+      const progress = Math.min(1, Math.max(0, note.progress));
+      const isSlide = note.type === "slide" && (note.path?.length ?? 0) > 1;
+      const score = isSlide
+        ? 100 + progress
+        : progress >= 0.85
+          ? 80 + progress
+          : progress;
+      if (score > bestScore) {
+        bestScore = score;
+        best = note;
+      }
+    }
+    if (!best) {
+      return this.aimSensor ? sensorXY(this.aimSensor) : null;
+    }
+
+    if (best.type === "slide" && best.path && best.path.length > 1) {
+      const raw = Math.min(1, Math.max(0, best.progress));
+      if (raw < 0.5) {
+        const head = sensorXY(best.path[0]);
+        const u = raw / 0.5;
+        return { x: head.x * u, y: head.y * u };
+      }
+      return pathPoint(best.path, (raw - 0.5) / 0.5);
+    }
+
+    const sensor = best.sensor ?? this.aimSensor;
+    if (!sensor) return null;
+    const target = sensorXY(sensor);
+    const progress = Math.min(1, Math.max(0, best.progress));
+    // Ease toward the pad as the note arrives (not a hard teleport).
+    return { x: target.x * progress, y: target.y * progress };
+  }
+
   /** Default 3/4 view from behind-right, looking over the fly at the playfield. */
   private frameCamera(): void {
     this.cabinet.screenCenterWorld(this._lookAt);
@@ -176,9 +227,9 @@ export class ArcadeScene {
     this.syncFlyContacts();
 
     let aimWorld: THREE.Vector3 | null = null;
-    if (this.aimSensor) {
-      const xy = sensorXY(this.aimSensor);
-      aimWorld = this.cabinet.sensorWorldPos(xy.x, xy.y, this._aimWorld);
+    const tip = this.tipUnitXY();
+    if (tip) {
+      aimWorld = this.cabinet.sensorWorldPos(tip.x, tip.y, this._aimWorld);
     }
     this.fly.update(this.pose, elapsed, aimWorld);
     this.controls.update();

@@ -16,23 +16,24 @@ const NOTE_R = 30;
 const S = SIZE / 512;
 
 const COLORS = {
-  bg: "#070b14",
-  diskInner: "#0c1524",
-  diskOuter: "#05070c",
+  bg: "rgba(7, 11, 20, 0.5)",
+  diskInner: "rgba(12, 21, 36, 0.5)",
+  diskOuter: "rgba(5, 7, 12, 0.5)",
   ring: "#1a2740",
   ringGlow: "#2a3f63",
-  pad: "#132033",
-  padStroke: "#3de0d0",
-  padMuted: "rgba(61, 224, 208, 0.22)",
+  pad: "rgba(19, 32, 51, 0.5)",
+  padStroke: "rgba(61, 224, 208, 0.85)",
+  padMuted: "rgba(61, 224, 208, 0.55)",
   note: "#e24f9c",
   noteCore: "#ffe6f4",
-  guide: "rgba(61, 224, 208, 0.14)",
+  guide: "rgba(61, 224, 208, 0.28)",
   slide: "#3de0d0",
-  text: "#8aa0b8",
-  textBright: "#e8f4ff",
+  text: "#d8e6f4",
+  textBright: "#ffffff",
+  textStroke: "rgba(4, 8, 16, 0.92)",
   aim: "#e24f9c",
   active: "#5ad6d0",
-  cSplit: "rgba(61, 224, 208, 0.35)",
+  cSplit: "rgba(61, 224, 208, 0.55)",
 };
 
 const JUDGMENT_COLORS: Record<Judgment, string> = {
@@ -42,14 +43,15 @@ const JUDGMENT_COLORS: Record<Judgment, string> = {
   miss: "#ff5a6a",
 };
 
-const A_WEDGE_HALF = Math.PI / 8 - 0.07;
-const B_WEDGE_HALF = Math.PI / 8 - 0.05;
-const A_INNER = 0.7;
+const OUTER_HALF = Math.PI / 16; // 16 alternating A/D wedges on outer ring
+const B_HALF = Math.PI / 8 - 0.06;
+const A_INNER = 0.72;
 const A_OUTER = 0.98;
+const D_INNER = 0.72;
+const D_OUTER = 0.98;
 const B_INNER = 0.26;
 const B_OUTER = 0.5;
-const D_PAD_R = 0.065;
-const E_PAD_R = 0.058;
+const E_SIZE = 0.07;
 const C_R = 0.2;
 
 interface Flash {
@@ -186,59 +188,57 @@ export class RingDisplay {
     this.flashes = this.flashes.filter((f) => f.until > nowMs);
 
     ctx.clearRect(0, 0, SIZE, SIZE);
-    ctx.fillStyle = COLORS.bg;
-    ctx.beginPath();
-    ctx.arc(CENTER, CENTER, OUTER_R + 8, 0, Math.PI * 2);
-    ctx.fill();
 
     ctx.save();
     ctx.beginPath();
-    ctx.arc(CENTER, CENTER, OUTER_R, 0, Math.PI * 2);
+    ctx.arc(CENTER, CENTER, OUTER_R + 8, 0, Math.PI * 2);
     ctx.clip();
+
     if (this.bgImage) {
       this.drawCover(this.bgImage);
-      ctx.fillStyle = "rgba(5, 7, 12, 0.22)";
+      ctx.fillStyle = "rgba(5, 7, 12, 0.35)";
       ctx.fillRect(0, 0, SIZE, SIZE);
     } else {
       const grad = ctx.createRadialGradient(CENTER, CENTER, 20, CENTER, CENTER, OUTER_R);
       grad.addColorStop(0, COLORS.diskInner);
       grad.addColorStop(1, COLORS.diskOuter);
       ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(CENTER, CENTER, OUTER_R + 8, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
 
-    // Soft vignette so the LCD reads as a recessed screen, not a flat sticker.
-    const vignette = ctx.createRadialGradient(
-      CENTER,
-      CENTER,
-      OUTER_R * 0.35,
-      CENTER,
-      CENTER,
-      OUTER_R,
-    );
-    vignette.addColorStop(0, "rgba(0,0,0,0)");
-    vignette.addColorStop(1, "rgba(0,0,0,0.35)");
-    ctx.fillStyle = vignette;
-    ctx.beginPath();
-    ctx.arc(CENTER, CENTER, OUTER_R, 0, Math.PI * 2);
-    ctx.fill();
-
     this.drawGuideRings();
 
-    // All 34 DX zones: C, B1-8, E1-8, A1-8 (edge wedges), D1-8 (gaps between A).
-    this.drawCenterC(nowMs);
+    // Pads at 50% opacity so jacket / disk shows through.
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    this.drawCenterC(nowMs, false);
     for (let i = 1; i <= 8; i++) {
-      this.drawWedgePad(`B${i}`, "B", i, B_INNER, B_OUTER, B_WEDGE_HALF, nowMs);
+      this.drawWedgePad(`B${i}`, "B", i, B_INNER, B_OUTER, B_HALF, nowMs, false);
     }
     for (let i = 1; i <= 8; i++) {
-      this.drawCirclePad(`E${i}`, E_PAD_R, nowMs);
+      this.drawDiamondPad(`E${i}`, E_SIZE, nowMs, false);
     }
     for (let i = 1; i <= 8; i++) {
-      this.drawWedgePad(`A${i}`, "A", i, A_INNER, A_OUTER, A_WEDGE_HALF, nowMs);
+      this.drawWedgePad(`D${i}`, "D", i, D_INNER, D_OUTER, OUTER_HALF, nowMs, false);
     }
     for (let i = 1; i <= 8; i++) {
-      this.drawCirclePad(`D${i}`, D_PAD_R, nowMs);
+      this.drawWedgePad(`A${i}`, "A", i, A_INNER, A_OUTER, OUTER_HALF, nowMs, false);
+    }
+    ctx.restore();
+
+    // Labels full-opacity on top. Skip A* — those live on the 3D bezel buttons.
+    this.drawCenterC(nowMs, true);
+    for (let i = 1; i <= 8; i++) {
+      this.drawSensorLabel(`B${i}`);
+    }
+    for (let i = 1; i <= 8; i++) {
+      this.drawSensorLabel(`E${i}`);
+    }
+    for (let i = 1; i <= 8; i++) {
+      this.drawSensorLabel(`D${i}`);
     }
 
     this.drawAllSlidePaths();
@@ -246,6 +246,31 @@ export class RingDisplay {
     for (const note of this.active) {
       this.drawNote(note);
     }
+  }
+
+  private drawSensorLabel(sensor: string): void {
+    const { ctx } = this;
+    const p = padPoint(sensor);
+    let x = p.x;
+    let y = p.y;
+    const area = sensor[0];
+    if (area === "D") {
+      // Sit in the wedge body, clear of the A bezel.
+      const inward = 0.78;
+      x = CENTER + (p.x - CENTER) * (inward / RADIUS.D);
+      y = CENTER + (p.y - CENTER) * (inward / RADIUS.D);
+    }
+    const size = area === "E" ? Math.round(13 * S) : Math.round(15 * S);
+    ctx.font = `700 ${size}px 'IBM Plex Mono', monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLORS.textBright;
+    ctx.shadowColor = COLORS.textStroke;
+    ctx.shadowBlur = 4 * S;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.fillText(sensor, x, y);
+    ctx.shadowBlur = 0;
   }
 
   private drawGuideRings(): void {
@@ -279,13 +304,13 @@ export class RingDisplay {
       };
     }
     if (tapped) {
-      return { fill: "#1c3a48", stroke: COLORS.padStroke, glow: 10, bright: true };
+      return { fill: "rgba(28, 58, 72, 1)", stroke: COLORS.padStroke, glow: 10, bright: true };
     }
     if (aimed) {
-      return { fill: "#15283a", stroke: COLORS.aim, glow: 6, bright: true };
+      return { fill: "rgba(21, 40, 58, 1)", stroke: COLORS.aim, glow: 6, bright: true };
     }
     if (active) {
-      return { fill: "#14323a", stroke: COLORS.active, glow: 4, bright: true };
+      return { fill: "rgba(20, 50, 58, 1)", stroke: COLORS.active, glow: 4, bright: true };
     }
     return {
       fill: COLORS.pad,
@@ -303,7 +328,9 @@ export class RingDisplay {
     outer: number,
     half: number,
     nowMs: number,
+    labelsOnly: boolean,
   ): void {
+    if (labelsOnly) return;
     const { ctx } = this;
     const mid = sensorAngleRad(area, index);
     // Canvas arcs: angle increases clockwise from +X. Math angles use y-up, so
@@ -339,96 +366,111 @@ export class RingDisplay {
     ctx.strokeStyle = style.stroke;
     ctx.lineWidth = 2 * S;
     ctx.stroke();
-
-    const label = padPoint(sensor);
-    ctx.fillStyle = style.bright ? COLORS.textBright : COLORS.text;
-    ctx.font = `600 ${Math.round(12 * S)}px 'IBM Plex Mono', monospace`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(sensor, label.x, label.y);
   }
 
-  private drawCirclePad(sensor: string, radiusUnit: number, nowMs: number): void {
+  private drawDiamondPad(
+    sensor: string,
+    sizeUnit: number,
+    nowMs: number,
+    labelsOnly: boolean,
+  ): void {
+    if (labelsOnly) return;
     const { ctx } = this;
     const p = padPoint(sensor);
-    const r = radiusUnit * OUTER_R;
+    const s = sizeUnit * OUTER_R;
     const style = this.highlightStyle(sensor, nowMs);
-
+    const path = () => {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - s);
+      ctx.lineTo(p.x + s * 0.75, p.y);
+      ctx.lineTo(p.x, p.y + s);
+      ctx.lineTo(p.x - s * 0.75, p.y);
+      ctx.closePath();
+    };
     if (style.glow > 0) {
       ctx.save();
       ctx.shadowColor = style.stroke;
       ctx.shadowBlur = style.glow;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      path();
       ctx.fillStyle = style.fill;
       ctx.fill();
       ctx.restore();
     } else {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      path();
       ctx.fillStyle = style.fill;
       ctx.fill();
     }
-
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    path();
     ctx.strokeStyle = style.stroke;
     ctx.lineWidth = 2 * S;
     ctx.stroke();
-
-    ctx.fillStyle = style.bright ? COLORS.textBright : COLORS.text;
-    ctx.font = `600 ${Math.round(11 * S)}px 'IBM Plex Mono', monospace`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(sensor, p.x, p.y);
   }
 
-  private drawCenterC(nowMs: number): void {
+  private drawCenterC(nowMs: number, labelsOnly: boolean): void {
     const { ctx } = this;
     const r = C_R * OUTER_R;
     const style = this.highlightStyle("C", nowMs);
+    // Flattened octagon matching DX pad art.
+    const path = () => {
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a = (i + 0.5) * (Math.PI / 4) - Math.PI / 2;
+        const px = CENTER + Math.cos(a) * r;
+        const py = CENTER + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
 
-    if (style.glow > 0) {
-      ctx.save();
-      ctx.shadowColor = style.stroke;
-      ctx.shadowBlur = style.glow;
+    if (!labelsOnly) {
+      if (style.glow > 0) {
+        ctx.save();
+        ctx.shadowColor = style.stroke;
+        ctx.shadowBlur = style.glow;
+        path();
+        ctx.fillStyle = style.fill;
+        ctx.fill();
+        ctx.restore();
+      } else {
+        path();
+        ctx.fillStyle = style.fill;
+        ctx.fill();
+      }
+
+      path();
+      ctx.strokeStyle = style.stroke;
+      ctx.lineWidth = 2.5 * S;
+      ctx.stroke();
+
+      // Visual C1 (right) / C2 (left) split
       ctx.beginPath();
-      ctx.arc(CENTER, CENTER, r, 0, Math.PI * 2);
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-      ctx.restore();
-    } else {
-      ctx.beginPath();
-      ctx.arc(CENTER, CENTER, r, 0, Math.PI * 2);
-      ctx.fillStyle = style.fill;
-      ctx.fill();
+      ctx.moveTo(CENTER, CENTER - r * 0.92);
+      ctx.lineTo(CENTER, CENTER + r * 0.92);
+      ctx.strokeStyle = COLORS.cSplit;
+      ctx.lineWidth = 1.5 * S;
+      ctx.stroke();
+      return;
     }
 
-    ctx.beginPath();
-    ctx.arc(CENTER, CENTER, r, 0, Math.PI * 2);
-    ctx.strokeStyle = style.stroke;
-    ctx.lineWidth = 2.5 * S;
-    ctx.stroke();
-
-    // Visual C1 (right) / C2 (left) split
-    ctx.beginPath();
-    ctx.moveTo(CENTER, CENTER - r);
-    ctx.lineTo(CENTER, CENTER + r);
-    ctx.strokeStyle = COLORS.cSplit;
-    ctx.lineWidth = 1.5 * S;
-    ctx.stroke();
-
-    ctx.fillStyle = style.bright ? COLORS.textBright : COLORS.text;
-    ctx.font = `600 ${Math.round(11 * S)}px 'IBM Plex Mono', monospace`;
+    ctx.font = `700 ${Math.round(14 * S)}px 'IBM Plex Mono', monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    ctx.fillStyle = COLORS.textBright;
+    ctx.shadowColor = COLORS.textStroke;
+    ctx.shadowBlur = 4 * S;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
     ctx.fillText("C1", CENTER + r * 0.42, CENTER);
     ctx.fillText("C2", CENTER - r * 0.42, CENTER);
+    ctx.shadowBlur = 0;
   }
 
   private drawAllSlidePaths(): void {
     const paths: string[][] = [...this.slidePaths];
+    // Active slide notes draw their own dashed path + trail in drawNote.
     for (const note of this.active) {
+      if (note.type === "slide") continue;
       const p = notePath(note);
       if (p) paths.push(p);
     }
@@ -437,32 +479,49 @@ export class RingDisplay {
     }
   }
 
-  private drawSlidePolyline(sensors: string[]): void {
+  private drawSlidePolyline(sensors: string[], progress = 0): void {
     if (sensors.length < 2) return;
     const { ctx } = this;
-    const pts = sensors.map((s) => padPoint(normalizeSensor(s)));
+    const pts = sensors.map((s) => {
+      const id = normalizeSensor(s);
+      return padPoint(id === "C" ? "C" : id);
+    });
 
     ctx.save();
     ctx.strokeStyle = COLORS.slide;
-    ctx.lineWidth = 3 * S;
+    ctx.lineWidth = 3.5 * S;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    ctx.globalAlpha = 0.85;
+    ctx.setLineDash([8 * S, 7 * S]);
+    ctx.globalAlpha = 0.9;
     ctx.shadowColor = COLORS.slide;
-    ctx.shadowBlur = 8 * S;
+    ctx.shadowBlur = 10 * S;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) {
       ctx.lineTo(pts[i].x, pts[i].y);
     }
     ctx.stroke();
+    ctx.setLineDash([]);
     ctx.restore();
 
-    for (const p of pts) {
+    // Filled trail up to current progress.
+    if (progress > 0.01) {
+      const pos = pointAlong(pts, Math.min(1, progress));
+      ctx.save();
+      ctx.strokeStyle = "rgba(61, 224, 208, 0.55)";
+      ctx.lineWidth = 5 * S;
+      ctx.lineJoin = "round";
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 3.5 * S, 0, Math.PI * 2);
-      ctx.fillStyle = COLORS.slide;
-      ctx.fill();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      const until = Math.min(1, progress) * (pts.length - 1);
+      const last = Math.floor(until);
+      for (let i = 1; i <= last; i++) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -492,12 +551,30 @@ export class RingDisplay {
       y = target.y;
       r = NOTE_R * (0.35 + 0.65 * progress);
     } else if (slide && note.path && note.path.length > 1) {
-      this.drawSlidePolyline(note.path);
-      // Head star approaches; body marker follows path by progress.
-      const head = padPoint(note.path[0]);
-      x = CENTER + (head.x - CENTER) * Math.min(1, progress * 1.15);
-      y = CENTER + (head.y - CENTER) * Math.min(1, progress * 1.15);
-      r = NOTE_R * (0.55 + 0.45 * Math.min(1, progress));
+      const raw = Math.min(1, Math.max(0, note.progress));
+      const pts = note.path.map((s) => {
+        const id = normalizeSensor(s);
+        return padPoint(id === "C" ? "C" : id);
+      });
+      let x: number;
+      let y: number;
+      let pathProg = 0;
+      if (raw < 0.5) {
+        // Approach head from center (progress 0..0.5).
+        const head = pts[0];
+        const u = raw / 0.5;
+        x = CENTER + (head.x - CENTER) * u;
+        y = CENTER + (head.y - CENTER) * u;
+        this.drawSlidePolyline(note.path, 0);
+      } else {
+        // Travel along dashed path (progress 0.5..1).
+        pathProg = (raw - 0.5) / 0.5;
+        this.drawSlidePolyline(note.path, pathProg);
+        const along = pointAlong(pts, pathProg);
+        x = along.x;
+        y = along.y;
+      }
+      const r = NOTE_R * 0.85;
       this.drawStar(x, y, r, fill, ring, note.is_break === true);
       if (note.is_hanabi) this.drawHanabi(x, y, r);
       return;
@@ -644,4 +721,20 @@ function noteColor(note: ActiveNote): string {
   if (note.type === "hold") return "#3de0d0";
   if (note.type === "slide") return "#ff7ad9";
   return COLORS.note;
+}
+
+function pointAlong(
+  pts: Array<{ x: number; y: number }>,
+  t: number,
+): { x: number; y: number } {
+  if (pts.length === 0) return { x: CENTER, y: CENTER };
+  if (pts.length === 1 || t <= 0) return pts[0];
+  if (t >= 1) return pts[pts.length - 1];
+  const f = t * (pts.length - 1);
+  const i = Math.min(pts.length - 2, Math.floor(f));
+  const u = f - i;
+  return {
+    x: pts[i].x + (pts[i + 1].x - pts[i].x) * u,
+    y: pts[i].y + (pts[i + 1].y - pts[i].y) * u,
+  };
 }

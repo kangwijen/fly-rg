@@ -63,6 +63,9 @@ export class Cabinet {
     this.screenMaterial = new THREE.MeshBasicMaterial({
       map: this.screenTexture,
       toneMapped: false,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
     });
     const screen = new THREE.Mesh(
       new THREE.CircleGeometry(SCREEN_RADIUS, 64),

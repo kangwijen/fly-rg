@@ -204,11 +204,34 @@ class Judge:
         for i, note in enumerate(self.notes):
             if self.matched[i]:
                 continue
-            if note.type == "slide" and note.slide is not None and self.slide_next[i] > 0:
-                path = note.slide.path
-                nxt = min(self.slide_next[i], len(path) - 1)
-                progress = self.slide_next[i] / max(len(path), 1)
-                active.append(self._note_payload(note, path[nxt], float(progress)))
+            if note.type == "slide" and note.slide is not None:
+                slide = note.slide
+                path = slide.path
+                wait_t = float(slide.wait_t)
+                end_t = float(slide.end_t)
+                # Stay visible through the slide window (approach + travel).
+                if now > end_t + GOOD:
+                    continue
+                if now < note.t - look_ahead_s and self.slide_next[i] == 0:
+                    continue
+                if now < wait_t:
+                    # progress 0..0.5 = approach head from center
+                    if look_ahead_s <= 0:
+                        approach = 1.0
+                    else:
+                        approach = max(
+                            0.0,
+                            min(1.0, 1.0 - (wait_t - now) / look_ahead_s),
+                        )
+                    progress = 0.5 * approach
+                else:
+                    # progress 0.5..1.0 = travel along path
+                    span = max(end_t - wait_t, 1e-6)
+                    travel = max(0.0, min(1.0, (now - wait_t) / span))
+                    progress = 0.5 + 0.5 * travel
+                # Highlight / aim use the next required path node for judging.
+                sensor = self._current_sensor(note, i)
+                active.append(self._note_payload(note, sensor, float(progress)))
                 continue
 
             tth = note.t - now

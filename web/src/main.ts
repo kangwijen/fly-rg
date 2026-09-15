@@ -87,6 +87,7 @@ function boot(): void {
           (msg.tap_button != null ? buttonToSensor(msg.tap_button) : null);
 
         scene.ring.setActive(msg.active);
+        scene.setActiveNotes(msg.active);
         if (typeof ring.setAimSensor === "function") {
           ring.setAimSensor(aimSensor, msg.tap, tapSensor);
         } else {

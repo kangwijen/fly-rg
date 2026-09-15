@@ -2,10 +2,11 @@
 
 export type Area = "A" | "B" | "C" | "D" | "E";
 
+/** Radii of zone centers (relative to outer playfield). */
 export const RADIUS: Record<Area, number> = {
   C: 0,
-  B: 0.48,
-  E: 0.62,
+  B: 0.4,
+  E: 0.58,
   A: 0.86,
   D: 0.86,
 };
@@ -33,7 +34,7 @@ export function buttonToSensor(button: number): string {
   return `A${button}`;
 }
 
-/** Math angle (radians): 0 = +X, pi/2 = +Y (up). Flip Y for canvas. */
+/** Math angle (radians): 0 = +X, pi/2 = +Y (up). */
 export function sensorAngleRad(area: Area, index = 1): number {
   if (area === "C") return 0;
   if (area === "A" || area === "B") {
@@ -45,8 +46,11 @@ export function sensorAngleRad(area: Area, index = 1): number {
   throw new Error(`unknown area ${area}`);
 }
 
-/** Unit disk: x right, y up. */
+/** Unit disk: x right, y up. C at origin; C1 right, C2 left. */
 export function sensorXY(sensor: string): { x: number; y: number } {
+  const s = sensor.trim().toUpperCase();
+  if (s === "C1") return { x: 0.08, y: 0 };
+  if (s === "C2") return { x: -0.08, y: 0 };
   const { area, index } = parseSensor(sensor);
   if (area === "C") return { x: 0, y: 0 };
   const ang = sensorAngleRad(area, index);
@@ -72,5 +76,23 @@ export function toCanvas(
   return {
     x: center + x * outerR,
     y: center - y * outerR,
+  };
+}
+
+/** Interpolate along a sensor path in unit disk coords (y up). */
+export function pathPoint(
+  sensors: string[],
+  t: number,
+): { x: number; y: number } {
+  if (sensors.length === 0) return { x: 0, y: 0 };
+  const pts = sensors.map((s) => sensorXY(s));
+  if (pts.length === 1 || t <= 0) return pts[0];
+  if (t >= 1) return pts[pts.length - 1];
+  const f = t * (pts.length - 1);
+  const i = Math.min(pts.length - 2, Math.floor(f));
+  const u = f - i;
+  return {
+    x: pts[i].x + (pts[i + 1].x - pts[i].x) * u,
+    y: pts[i].y + (pts[i + 1].y - pts[i].y) * u,
   };
 }

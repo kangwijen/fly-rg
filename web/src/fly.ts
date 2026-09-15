@@ -4,11 +4,13 @@ import { buttonToSensor, sensorXY } from "./sensors";
 
 const LEG_LEN = 0.16;
 const PRESS_DEPTH = 0.022;
+const TIP_FOLLOW = 8.5; // higher = snappier, still smooth (1/s exponential)
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 /**
  * Drosophila-style fruit fly: head toward the cabinet glass, six legs,
- * large red eyes, translucent wings. Foreleg tips stay on the screen plane.
+ * large red eyes, translucent wings. Foreleg tips stay on the screen plane
+ * and smoothly chase note/slide targets (no hard snaps).
  */
 export class FruitFly {
   readonly group = new THREE.Group();
@@ -21,15 +23,18 @@ export class FruitFly {
   private foreRight: THREE.Mesh;
   private leftHip = new THREE.Vector3(-0.045, 0.04, 0.055);
   private rightHip = new THREE.Vector3(0.045, 0.04, 0.055);
-  private leftContact = new THREE.Vector3();
-  private rightContact = new THREE.Vector3();
+  private leftIdle = new THREE.Vector3();
+  private rightIdle = new THREE.Vector3();
+  private leftTip = new THREE.Vector3();
+  private rightTip = new THREE.Vector3();
+  private tipInitialized = false;
   private hasContacts = false;
   private aimSensor = "A5";
   private screenNormal = new THREE.Vector3(0, 0, 1);
-  private readonly _leftTip = new THREE.Vector3();
-  private readonly _rightTip = new THREE.Vector3();
   private readonly _dir = new THREE.Vector3();
   private readonly _mid = new THREE.Vector3();
+  private readonly _target = new THREE.Vector3();
+  private lastElapsed = 0;
   private baseY = 0;
 
   constructor() {
@@ -160,9 +165,14 @@ export class FruitFly {
   }
 
   setContactTargets(leftWorld: THREE.Vector3, rightWorld: THREE.Vector3): void {
-    this.leftContact.copy(leftWorld);
-    this.rightContact.copy(rightWorld);
+    this.leftIdle.copy(leftWorld);
+    this.rightIdle.copy(rightWorld);
     this.hasContacts = true;
+    if (!this.tipInitialized) {
+      this.leftTip.copy(leftWorld);
+      this.rightTip.copy(rightWorld);
+      this.tipInitialized = true;
+    }
   }
 
   setScreenNormal(normalWorld: THREE.Vector3): void {
@@ -182,6 +192,9 @@ export class FruitFly {
   update(pose: Pose, elapsed: number, aimWorld: THREE.Vector3 | null = null): void {
     const aim = Math.max(-1, Math.min(1, pose.aim));
     const strike = Math.max(0, Math.min(1, pose.strike));
+    const dt = Math.min(0.05, Math.max(0, elapsed - this.lastElapsed));
+    this.lastElapsed = elapsed;
+    const alpha = 1 - Math.exp(-TIP_FOLLOW * dt);
 
     this.body.rotation.y = aim * 0.18;
     this.head.rotation.y = aim * 0.16;
@@ -196,33 +209,38 @@ export class FruitFly {
     this.group.position.y = this.baseY + Math.sin(elapsed * 3.2) * 0.004;
     this.group.position.x = -0.42 + aim * 0.03;
 
-    if (!this.hasContacts) return;
+    if (!this.hasContacts || !this.tipInitialized) return;
 
     this.group.updateWorldMatrix(true, false);
 
-    this._leftTip.copy(this.leftContact);
-    this._rightTip.copy(this.rightContact);
-
-    const pressLeft = aimWorld
-      ? this.leftContact.distanceToSquared(aimWorld) <=
-        this.rightContact.distanceToSquared(aimWorld)
-      : sensorXY(this.aimSensor).x > 0;
+    // Soft rest pose: tips ease back toward idle pads when nothing is aimed.
+    this.leftTip.lerp(this.leftIdle, alpha * 0.55);
+    this.rightTip.lerp(this.rightIdle, alpha * 0.55);
 
     if (aimWorld) {
+      const pressLeft =
+        this.leftTip.distanceToSquared(aimWorld) <=
+        this.rightTip.distanceToSquared(aimWorld);
+
+      this._target.copy(aimWorld);
+      this._target.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike);
+
       if (pressLeft) {
-        this._leftTip.lerp(aimWorld, 0.85 + strike * 0.15);
-        this._leftTip.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike);
+        this.leftTip.lerp(this._target, alpha);
+        // Trailing tip follows a bit so the body doesn't look pinned.
+        this.rightTip.lerp(this.rightIdle, alpha * 0.35);
       } else {
-        this._rightTip.lerp(aimWorld, 0.85 + strike * 0.15);
-        this._rightTip.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike);
+        this.rightTip.lerp(this._target, alpha);
+        this.leftTip.lerp(this.leftIdle, alpha * 0.35);
       }
     } else if (strike > 0.01) {
-      const active = pressLeft ? this._leftTip : this._rightTip;
-      active.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike);
+      const pressLeft = sensorXY(this.aimSensor).x > 0;
+      const tip = pressLeft ? this.leftTip : this.rightTip;
+      tip.addScaledVector(this.screenNormal, -PRESS_DEPTH * strike * alpha);
     }
 
-    this.plantLeg(this.foreLeft, this.leftHip, this._leftTip);
-    this.plantLeg(this.foreRight, this.rightHip, this._rightTip);
+    this.plantLeg(this.foreLeft, this.leftHip, this.leftTip);
+    this.plantLeg(this.foreRight, this.rightHip, this.rightTip);
   }
 
   private plantLeg(leg: THREE.Mesh, hipLocal: THREE.Vector3, tipWorld: THREE.Vector3): void {
