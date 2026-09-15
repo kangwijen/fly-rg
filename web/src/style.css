@@ -239,7 +239,8 @@ body,
   line-height: 1;
 }
 
-.hud-combo span {
+.hud-combo span,
+.hud-score span {
   display: block;
   font-size: 0.62rem;
   letter-spacing: 0.14em;
@@ -247,6 +248,14 @@ body,
   font-family: "IBM Plex Mono", monospace;
   font-weight: 500;
   margin-bottom: 0.15rem;
+}
+
+.hud-score {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(1.35rem, 2.8vw, 2rem);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--cyan);
 }
 
 .hud-accuracy {

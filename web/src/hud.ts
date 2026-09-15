@@ -9,6 +9,9 @@ const EMPTY_SCORE: Score = {
   good: 0,
   miss: 0,
   accuracy: 0,
+  achievement: 0,
+  dx_score: 0,
+  dx_max: 0,
 };
 
 const JUDGMENT_FLASH_MS = 700;
@@ -26,6 +29,11 @@ export type LevelInfo = { difficulty: number; level: string };
 
 function pct(v: number): string {
   return `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
+}
+
+function formatAchievement(ratio: number): string {
+  const pctValue = Math.floor(ratio * 1_000_000 + 1e-9) / 10_000;
+  return `${pctValue.toFixed(4)}%`;
 }
 
 function judgmentWord(judgment: Judgment): string {
@@ -69,6 +77,7 @@ export class Hud {
   private artistEl: HTMLElement;
   private statusEl: HTMLElement;
   private comboEl: HTMLElement;
+  private scoreEl: HTMLElement;
   private accuracyEl: HTMLElement;
   private criticalEl: HTMLElement;
   private perfectEl: HTMLElement;
@@ -126,6 +135,7 @@ export class Hud {
       </div>
       <div class="neural-score">
         <div class="hud-combo"><span>COMBO</span><b data-combo>0</b></div>
+        <div class="hud-score"><span>SCORE</span><b data-score>0.0000%</b></div>
         <div class="hud-accuracy" data-accuracy>0.0% ACC</div>
         <div class="hud-judgments">
           <div class="judge-critical">CRITICAL <b data-critical>0</b></div>
@@ -162,6 +172,7 @@ export class Hud {
     this.statusEl = this.mustNeural("[data-status]");
     this.metaEl = this.mustNeural("[data-meta]");
     this.comboEl = this.mustNeural("[data-combo]");
+    this.scoreEl = this.mustNeural("[data-score]");
     this.accuracyEl = this.mustNeural("[data-accuracy]");
     this.criticalEl = this.mustNeural("[data-critical]");
     this.perfectEl = this.mustNeural("[data-perfect]");
@@ -273,7 +284,14 @@ export class Hud {
 
   setScore(score: Score): void {
     this.comboEl.textContent = String(score.combo);
-    this.accuracyEl.textContent = `${(score.accuracy * 100).toFixed(1)}% ACC`;
+    this.scoreEl.textContent = formatAchievement(score.achievement ?? 0);
+    const acc = score.accuracy ?? 0;
+    const dxScore = score.dx_score ?? 0;
+    const dxMax = score.dx_max ?? 0;
+    this.accuracyEl.textContent =
+      dxMax > 0
+        ? `${(acc * 100).toFixed(1)}% ACC  ${dxScore}/${dxMax}`
+        : `${(acc * 100).toFixed(1)}% ACC`;
     this.criticalEl.textContent = String(score.critical ?? 0);
     this.perfectEl.textContent = String(score.perfect);
     this.greatEl.textContent = String(score.great);

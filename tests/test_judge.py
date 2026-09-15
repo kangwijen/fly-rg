@@ -82,8 +82,59 @@ def test_accuracy():
     j.press(1, 1.0)
     j.press(2, 2.0)
     j.auto_miss(3.0 + GOOD + 0.01)
-    # 2 critical + 1 miss -> 2/3
+    # 2 critical + 1 miss on equal taps: DX 6/9, achievement 1000/1500
     assert abs(j.score.accuracy - (2.0 / 3.0)) < 1e-9
+    assert abs(j.score.achievement - (2.0 / 3.0)) < 1e-9
+    assert j.score.dx_points == 6
+    assert j.score.max_dx == 9
+
+
+def test_achievement_all_critical_taps_is_100():
+    j = Judge(_notes())
+    j.press(1, 1.0)
+    j.press(2, 2.0)
+    j.press(1, 3.0)
+    assert abs(j.score.achievement - 1.0) < 1e-12
+    assert abs(j.score.accuracy - 1.0) < 1e-12
+
+
+def test_achievement_all_critical_breaks_is_101():
+    notes = [
+        Note(t=1.0, button=1, type="tap", is_break=True),
+        Note(t=2.0, button=2, type="tap", is_break=True),
+    ]
+    j = Judge(notes)
+    j.press(1, 1.0)
+    j.press(2, 2.0)
+    assert abs(j.score.achievement - 1.01) < 1e-12
+    assert abs(j.score.accuracy - 1.0) < 1e-12
+
+
+def test_break_perfect_gives_100_plus_half_bonus():
+    j = Judge([Note(t=1.0, button=1, type="tap", is_break=True)])
+    h = j.press(1, 1.020)
+    assert h is not None and h.judgment == "perfect"
+    # 2500/2500 base + 50/100 * 1%
+    assert abs(j.score.achievement - 1.005) < 1e-12
+
+
+def test_hold_and_slide_weights():
+    notes = [
+        Note(t=1.0, button=1, type="hold", end=2.0),
+        Note(
+            t=2.0,
+            button=2,
+            type="slide",
+            sensor="A2",
+            end=3.0,
+            slide=SlideInfo(shape="-", end_sensor="A2", path=("A2",), end_t=3.0),
+        ),
+    ]
+    j = Judge(notes)
+    assert j.score.max_base == 2500
+    j.press(1, 1.0)
+    j.press(2, 2.0)
+    assert abs(j.score.achievement - 1.0) < 1e-12
 
 
 def test_judge_by_sensor_touch():

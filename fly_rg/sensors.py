@@ -24,6 +24,19 @@ RADIUS = {
     "D": 0.854,
 }
 
+PAD = {
+    "cR": 0.32,
+    "bOct": 0.145,
+    "eRadial": 0.08,
+    "eTangent": 0.07,
+    "adInner": 0.62,
+    "adOuter": 0.995,
+    "adHalf": math.pi / 16,
+    "dInner": 0.72,
+    "dOuter": 0.995,
+    "dHalf": math.pi / 20,
+}
+
 
 def parse_sensor(sensor: str) -> tuple[Area, int]:
     """Parse 'A1'..'E8' or 'C'/'C1'/'C2' into (area, index). C index is 0."""
@@ -81,6 +94,26 @@ def sensor_xy(sensor: str) -> tuple[float, float]:
     ang = sensor_angle_rad(area, index)
     r = RADIUS[area]
     return r * math.cos(ang), r * math.sin(ang)
+
+
+def is_button_sensor(sensor: str) -> bool:
+    try:
+        area, _index = parse_sensor(sensor)
+    except ValueError:
+        return False
+    return area == "A"
+
+
+def note_landing_xy(sensor: str) -> tuple[float, float]:
+    s = sensor.strip().upper()
+    if s in ("C", "C1", "C2"):
+        return sensor_xy(s)
+    area, index = parse_sensor(s)
+    if area == "A":
+        ang = sensor_angle_rad("A", index)
+        # Majdata TapBase/HoldDrop LAND at 4.8 (unit 1.0); touch GetAreaPos A is 4.1 (unit 0.854).
+        return math.cos(ang), math.sin(ang)
+    return sensor_xy(s)
 
 
 def sensor_side(sensor: str) -> str:

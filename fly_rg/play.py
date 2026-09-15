@@ -214,8 +214,9 @@ async def _play_once(
 
     emit(end_message(judge.score.to_dict()))
     print(
-        f"end accuracy={judge.score.accuracy:.3f} "
-        f"P={judge.score.perfect} G={judge.score.great} "
+        f"end achievement={judge.score.achievement:.6f} "
+        f"acc={judge.score.accuracy:.3f} "
+        f"C={judge.score.critical} P={judge.score.perfect} G={judge.score.great} "
         f"g={judge.score.good} M={judge.score.miss} combo={judge.score.combo}",
         flush=True,
     )

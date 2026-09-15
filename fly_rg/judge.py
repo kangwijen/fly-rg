@@ -24,6 +24,97 @@ TOUCH_GREAT = 0.250
 TOUCH_GOOD = 0.300
 
 
+# DX achievement tables (donmai / spiritsunite): TAP 1, HOLD 2, SLIDE 3,
+# TOUCH 1, BREAK 5 in the 100% pool; extra 1% from break bonus.
+# Great uses the high-great row (x0.8). Perfect-break bonus uses low Perfect
+# (50) because this judge does not split high/low Perfect.
+_TAP_BASE = {
+    "critical": 500,
+    "perfect": 500,
+    "great": 400,
+    "good": 250,
+    "miss": 0,
+}
+_HOLD_BASE = {
+    "critical": 1000,
+    "perfect": 1000,
+    "great": 800,
+    "good": 500,
+    "miss": 0,
+}
+_SLIDE_BASE = {
+    "critical": 1500,
+    "perfect": 1500,
+    "great": 1200,
+    "good": 750,
+    "miss": 0,
+}
+_BREAK_BASE = {
+    "critical": 2500,
+    "perfect": 2500,
+    "great": 2000,
+    "good": 1000,
+    "miss": 0,
+}
+_BREAK_BONUS = {
+    "critical": 100,
+    "perfect": 50,
+    "great": 40,
+    "good": 30,
+    "miss": 0,
+}
+_DX_POINTS = {
+    "critical": 3,
+    "perfect": 2,
+    "great": 1,
+    "good": 0,
+    "miss": 0,
+}
+
+
+def _base_max(note: Note) -> int:
+    if note.is_mine:
+        return 0
+    if note.is_break:
+        return 2500
+    nt = note.type
+    if nt == "tap" or nt == "touch":
+        return 500
+    if nt == "hold" or nt == "touch_hold":
+        return 1000
+    if nt == "slide":
+        return 1500
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
+
+
+def _bonus_max(note: Note) -> int:
+    if note.is_mine or not note.is_break:
+        return 0
+    return 100
+
+
+def _dx_max(note: Note) -> int:
+    return 0 if note.is_mine else 3
+
+
+def _judgment_points(note: Note, judgment: Judgment) -> tuple[int, int, int]:
+    dx = _DX_POINTS[judgment]
+    if note.is_mine:
+        return 0, 0, 0
+    if note.is_break:
+        return _BREAK_BASE[judgment], _BREAK_BONUS[judgment], dx
+    nt = note.type
+    if nt == "tap" or nt == "touch":
+        return _TAP_BASE[judgment], 0, dx
+    if nt == "hold" or nt == "touch_hold":
+        return _HOLD_BASE[judgment], 0, dx
+    if nt == "slide":
+        return _SLIDE_BASE[judgment], 0, dx
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
+
+
 @dataclass
 class Score:
     combo: int = 0
@@ -32,6 +123,12 @@ class Score:
     great: int = 0
     good: int = 0
     miss: int = 0
+    base_points: int = 0
+    bonus_points: int = 0
+    dx_points: int = 0
+    max_base: int = 0
+    max_bonus: int = 0
+    max_dx: int = 0
 
     @property
     def judged(self) -> int:
@@ -39,15 +136,21 @@ class Score:
 
     @property
     def accuracy(self) -> float:
-        total = self.judged
-        if total == 0:
+        """DX score ratio (CP=3, P=2, Gr=1) against the chart max."""
+        if self.max_dx <= 0:
             return 1.0
-        points = (
-            (self.critical + self.perfect) * 1.0
-            + self.great * 0.8
-            + self.good * 0.5
+        return self.dx_points / self.max_dx
+
+    @property
+    def achievement(self) -> float:
+        """maimai DX achievement in 0..1.01 (101% when every break is CP)."""
+        if self.max_base <= 0:
+            return 1.0
+        base = self.base_points / self.max_base
+        bonus = (
+            (self.bonus_points / self.max_bonus) * 0.01 if self.max_bonus > 0 else 0.0
         )
-        return points / total
+        return base + bonus
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +161,9 @@ class Score:
             "good": self.good,
             "miss": self.miss,
             "accuracy": float(self.accuracy),
+            "achievement": float(self.achievement),
+            "dx_score": self.dx_points,
+            "dx_max": self.max_dx,
         }
 
 
@@ -89,6 +195,9 @@ class Judge:
         self.slide_next = [0] * n
         self.head_judgment = [None] * n
         self.head_timing = [None] * n
+        self.score.max_base = sum(_base_max(note) for note in self.notes)
+        self.score.max_bonus = sum(_bonus_max(note) for note in self.notes)
+        self.score.max_dx = sum(_dx_max(note) for note in self.notes)
 
     def press(self, sensor_or_button: str | int, t: float) -> HitEvent | None:
         """On press, match by sensor id (slides advance path order).
@@ -389,6 +498,10 @@ class Judge:
 
     def _apply(self, index: int, judgment: Judgment) -> None:
         self.matched[index] = True
+        base, bonus, dx = _judgment_points(self.notes[index], judgment)
+        self.score.base_points += base
+        self.score.bonus_points += bonus
+        self.score.dx_points += dx
         if judgment == "critical":
             self.score.critical += 1
             self.score.combo += 1

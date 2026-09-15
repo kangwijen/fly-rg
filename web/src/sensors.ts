@@ -27,6 +27,9 @@ export const PAD = {
   adInner: 0.62,
   adOuter: 0.995,
   adHalf: Math.PI / 16,
+  dInner: 0.72,
+  dOuter: 0.995,
+  dHalf: Math.PI / 20,
 } as const;
 
 export function parseSensor(sensor: string): { area: Area; index: number } {
@@ -74,6 +77,37 @@ export function sensorXY(sensor: string): { x: number; y: number } {
   const ang = sensorAngleRad(area, index);
   const r = RADIUS[area];
   return { x: r * Math.cos(ang), y: r * Math.sin(ang) };
+}
+
+export function isButtonSensor(sensor: string): boolean {
+  try {
+    return parseSensor(sensor).area === "A";
+  } catch {
+    return false;
+  }
+}
+
+export function noteLandingXY(sensor: string): { x: number; y: number } {
+  const s = sensor.trim().toUpperCase();
+  if (s === "C1" || s === "C2") return sensorXY(s);
+  const { area, index } = parseSensor(s);
+  switch (area) {
+    case "C":
+      return sensorXY(s);
+    case "A": {
+      const ang = sensorAngleRad("A", index);
+      // Majdata TapBase/HoldDrop LAND at 4.8 (unit 1.0); touch GetAreaPos A is 4.1 (unit 0.854).
+      return { x: Math.cos(ang), y: Math.sin(ang) };
+    }
+    case "B":
+    case "D":
+    case "E":
+      return sensorXY(s);
+    default: {
+      const _exhaustive: never = area;
+      throw new Error(`unknown area ${_exhaustive}`);
+    }
+  }
 }
 
 export function allSensors(): string[] {

@@ -8,6 +8,9 @@ export interface Score {
   good: number;
   miss: number;
   accuracy: number;
+  achievement: number;
+  dx_score: number;
+  dx_max: number;
 }
 
 export interface SlideInfo {
