@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import time
+
 from fly_rg.brain_backend import MockBrain
 from fly_rg.decoder import ActionDecoder
 from fly_rg.encoder import ON_PAD_TTH_S, NoteEncoder
 from fly_rg.judge import Judge
+from fly_rg.neuron_view import NeuronAtlas
 from fly_rg.play import (
     STATE_PERIOD_S,
+    Session,
     _contact_sensors,
+    _pace,
+    _play_once,
     _press_sensor,
     _state_due,
     _want_press,
@@ -209,3 +217,60 @@ def test_chart_message_omits_active_when_not_passed():
     msg = chart_message(chart)
     assert "active" not in msg
     assert "active_sensors" not in msg
+
+
+def test_pace_yields_when_clock_is_behind():
+    async def main() -> None:
+        flag = {"ok": False}
+
+        async def mark() -> None:
+            flag["ok"] = True
+
+        task = asyncio.create_task(mark())
+        await _pace(-1.0)
+        await task
+        assert flag["ok"]
+
+    asyncio.run(main())
+
+
+def test_stop_event_halts_play_when_behind_realtime(monkeypatch) -> None:
+    monkeypatch.setattr("fly_rg.play.broadcast", lambda *_a, **_k: None)
+
+    orig_encode = NoteEncoder.encode
+
+    def slow_encode(self, *args, **kwargs):
+        time.sleep(0.015)
+        return orig_encode(self, *args, **kwargs)
+
+    monkeypatch.setattr(NoteEncoder, "encode", slow_encode)
+
+    async def main() -> None:
+        args = argparse.Namespace(dt=0.004, speed=1.0, look_ahead=1.0)
+        session = Session()
+        session.clients.add(object())
+        chart = Chart(
+            title="t",
+            artist="a",
+            notes=[Note(t=8.0, button=1, type="tap", sensor="A1")],
+        )
+        task = asyncio.create_task(
+            _play_once(
+                session=session,
+                chart=chart,
+                brain=MockBrain(dt=0.004),
+                is_mock=True,
+                encoder=NoteEncoder(mock=True),
+                atlas=NeuronAtlas(n=24, seed=0),
+                args=args,
+            )
+        )
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.05)
+            session.stop_event.set()
+
+        asyncio.create_task(stop_soon())
+        await asyncio.wait_for(task, timeout=0.5)
+
+    asyncio.run(main())

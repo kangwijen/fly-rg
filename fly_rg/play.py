@@ -113,6 +113,11 @@ async def _resource_loop(session: Session, monitor: ResourceMonitor) -> None:
         await asyncio.sleep(RESOURCE_PERIOD_S)
 
 
+async def _pace(delay: float) -> None:
+    """Always yield so Stop, resources, and WS flushes can run."""
+    await asyncio.sleep(delay if delay > 0.0 else 0.0)
+
+
 def _state_due(
     sim_t: float,
     last_state_t: float,
@@ -140,8 +145,12 @@ async def _play_once(
     args: argparse.Namespace,
 ) -> None:
     def emit(msg: dict) -> None:
-        if session.clients:
+        if not session.clients:
+            return
+        try:
             broadcast(session.clients, dumps(msg))
+        except Exception:
+            pass
 
     last_note_t = max((n.t for n in chart.notes), default=0.0)
     # Pad for holds/slides that extend past last head time.
@@ -163,15 +172,13 @@ async def _play_once(
             active_sensors=judge.active_sensors(0.0, args.look_ahead),
         )
     )
-    if not is_mock:
-        try:
-            brain.step(inject=[])
-        except Exception:
-            pass
+    await _pace(0.0)
+    if session.stop_event.is_set() or not session.clients:
+        print("play stopped", flush=True)
+        return
     t0 = time.perf_counter()
     sim_t = 0.0
     step_i = 0
-    session.stop_event.clear()
     motor_dt = float(args.dt)
     brain_dt = motor_dt
     next_brain_t = 0.0
@@ -197,8 +204,7 @@ async def _play_once(
 
         target = t0 + (sim_t / max(args.speed, 1e-9))
         delay = target - time.perf_counter()
-        if delay > 0:
-            await asyncio.sleep(delay)
+        await _pace(delay)
 
         enc = encoder.encode(
             chart.notes,
@@ -416,6 +422,11 @@ async def run_play(args: argparse.Namespace) -> None:
     )
 
     encoder = NoteEncoder(brain if not is_mock else None, mock=is_mock)
+    if not is_mock:
+        try:
+            brain.step(inject=[])
+        except Exception:
+            pass
     atlas = NeuronAtlas(n=720, seed=7)
     layout_msg = atlas.layout_message()
     session = Session()
@@ -437,6 +448,7 @@ async def run_play(args: argparse.Namespace) -> None:
 
     async def start_chart(chart: Chart) -> None:
         await stop_play()
+        session.stop_event = asyncio.Event()
         session.chart = chart
         session.play_task = asyncio.create_task(
             _play_once(

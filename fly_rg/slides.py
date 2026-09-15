@@ -93,7 +93,7 @@ def _straight_path(start: int, end: int) -> list[str]:
     if d == 2:
         cw = _short_clockwise(start, end)
         mid = _next_button(start, clockwise=cw)
-        # Guide: A1, A2/B2, A3 — use B mid as the touch step.
+        # Guide: A1, A2/B2, A3; use B mid as the touch step.
         return [_a(start), _b(mid), _a(end)]
     # Longer chords cross the center: A, B_start, C, B_end, A_end
     return [_a(start), _b(start), "C", _b(end), _a(end)]
@@ -119,29 +119,15 @@ def _grand_v(start: int, mid: int, end: int) -> list[str]:
 
 
 def _inner_loop(start: int, end: int, *, clockwise: bool) -> list[str]:
-    """p / q: enter B_start, walk B ring the long/chosen way to B_end, exit A_end.
+    """p / q: enter B_start, walk B ring in the requested direction, exit A_end.
 
     Example p2 from guide: A1, B1, B8, B7, B6, B5, B4, B3, B2, A2
     """
-    # Prefer the longer B-ring walk when start!=end so it reads as a loop.
-    short_cw = _short_clockwise(start, end)
-    use_cw = clockwise
-    if start != end:
-        # p/q choose direction; if that is the short arc, still follow requested dir.
-        use_cw = clockwise
-        _ = short_cw
-    b_buttons = _arc_buttons(start, end, clockwise=use_cw)
-    # Full loop when start==end: walk all 8 B then back.
+    b_buttons = _arc_buttons(start, end, clockwise=clockwise)
     path = [_a(start), _b(start)]
     for b in b_buttons[1:]:
         path.append(_b(b))
-    if start != end:
-        # Ensure we don't duplicate B_end before A_end
-        if path[-1] != _b(end):
-            path.append(_b(end))
-        path.append(_a(end))
-    else:
-        path.append(_a(end))
+    path.append(_a(end))
     return path
 
 

@@ -192,7 +192,7 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
         # Compact EACH of bare taps: "12" "135" etc.
         parts = _split_compact_taps(group) if _is_compact_tap_run(group) else [group]
         is_each = len(parts) > 1
-        # Also EACH if previous leftover used / — handled by calling this once
+        # Also EACH if previous leftover used / ; handled by calling this once
         # per slash-separated chunk; mark each when sibling chunks exist at
         # same time by scanning nearby. Simpler: track simultaneous bucket.
         bucket: list[Note] = []
@@ -304,7 +304,7 @@ def _parse_slide_timing(
     return default_wait, default_wait + dur
 
 
-_FLAG_CHARS = set("bxm$@?!")  # not h (hold) or f (hanabi — touch-only)
+_FLAG_CHARS = set("bxm$@?!")  # not h (hold) or f (hanabi, touch-only)
 
 
 def _take_flags(s: str, pos: int) -> tuple[set[str], int]:
@@ -363,7 +363,7 @@ def _parse_note_token(
         return []
     try:
         return _parse_note_token_inner(token, t, bpm=bpm, beat_seconds=beat_seconds)
-    except Exception as exc:  # noqa: BLE001 — keep chart loading resilient
+    except Exception as exc:  # noqa: BLE001  keep chart loading resilient
         warnings.warn(f"skipping note {token!r}: {exc}", stacklevel=2)
         return []
 

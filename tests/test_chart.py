@@ -198,31 +198,24 @@ def test_teratera_parses_many_notes():
 def test_worlds_end_gt5_path():
     assert WORLDS_END.is_file()
     text = WORLDS_END.read_text(encoding="utf-8")
-    levels = {int(e["difficulty"]) for e in list_difficulties(text)}
-    if 4 in levels:
-        difficulty = 4
-    elif 5 in levels:
-        difficulty = 5
-    else:
-        difficulty = max(levels)
-    chart = parse_simai(text, difficulty=difficulty)
-    assert len(chart.notes) > 0
-    candidates = [
-        n
-        for n in chart.notes
-        if n.type == "slide"
-        and n.button == 5
-        and n.slide is not None
-        and (
-            n.slide.shape == ">"
-            or (n.slide.path and n.slide.path[0] == "A5" and ">" in n.slide.shape)
-        )
-    ]
-    if candidates:
-        path = candidates[0].slide.path
-        assert path[0] == "A5"
-        assert path[1] == "A4"
-        assert path[2] == "A3"
+    path = None
+    for entry in list_difficulties(text):
+        chart = parse_simai(text, difficulty=int(entry["difficulty"]))
+        for n in chart.notes:
+            if (
+                n.type == "slide"
+                and n.button == 5
+                and n.slide is not None
+                and n.slide.shape == ">"
+            ):
+                path = n.slide.path
+                break
+        if path is not None:
+            break
+    assert path is not None
+    assert path[0] == "A5"
+    assert path[1] == "A4"
+    assert path[2] == "A3"
 
 
 def test_teratera_p_direction():
