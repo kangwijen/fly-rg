@@ -84,6 +84,7 @@ def hit_message(
     button: int | None,
     judgment: str,
     sensor: str | None = None,
+    timing: str | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "hit",
@@ -91,6 +92,7 @@ def hit_message(
         "button": button,
         "sensor": sensor,
         "judgment": judgment,
+        "timing": timing,
     }
 
 

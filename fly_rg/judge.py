@@ -8,16 +8,26 @@ from typing import Literal, Never
 from fly_rg.schema import Note
 from fly_rg.sensors import button_to_sensor
 
-Judgment = Literal["perfect", "great", "good", "miss"]
+Judgment = Literal["critical", "perfect", "great", "good", "miss"]
+Timing = Literal["fast", "late"]
 
-PERFECT = 0.033
-GREAT = 0.066
-GOOD = 0.1
+# Tap / hold / slide head (seconds). GOOD is the tap-like miss window.
+CRITICAL = 0.01667
+PERFECT = 0.050
+GREAT = 0.100
+GOOD = 0.150
+
+# Touch / touch_hold. Late-only Perfect/Great/Good; early within 150ms is Critical.
+TOUCH_CRITICAL = 0.150
+TOUCH_PERFECT = 0.200
+TOUCH_GREAT = 0.250
+TOUCH_GOOD = 0.300
 
 
 @dataclass
 class Score:
     combo: int = 0
+    critical: int = 0
     perfect: int = 0
     great: int = 0
     good: int = 0
@@ -25,19 +35,24 @@ class Score:
 
     @property
     def judged(self) -> int:
-        return self.perfect + self.great + self.good + self.miss
+        return self.critical + self.perfect + self.great + self.good + self.miss
 
     @property
     def accuracy(self) -> float:
         total = self.judged
         if total == 0:
             return 1.0
-        points = self.perfect * 1.0 + self.great * 0.8 + self.good * 0.5
+        points = (
+            (self.critical + self.perfect) * 1.0
+            + self.great * 0.8
+            + self.good * 0.5
+        )
         return points / total
 
     def to_dict(self) -> dict:
         return {
             "combo": self.combo,
+            "critical": self.critical,
             "perfect": self.perfect,
             "great": self.great,
             "good": self.good,
@@ -53,6 +68,7 @@ class HitEvent:
     judgment: Judgment
     note_index: int
     sensor: str
+    timing: Timing | None = None
 
 
 @dataclass
@@ -64,6 +80,7 @@ class Judge:
     # Next path index required for slides (0 = waiting for head / path[0]).
     slide_next: list[int] = field(init=False)
     head_judgment: list[Judgment | None] = field(init=False)
+    head_timing: list[Timing | None] = field(init=False)
     score: Score = field(default_factory=Score)
 
     def __post_init__(self) -> None:
@@ -71,6 +88,7 @@ class Judge:
         self.matched = [False] * n
         self.slide_next = [0] * n
         self.head_judgment = [None] * n
+        self.head_timing = [None] * n
 
     def press(self, sensor_or_button: str | int, t: float) -> HitEvent | None:
         """On press, match by sensor id (slides advance path order).
@@ -98,9 +116,9 @@ class Judge:
                 continue
             return self._advance_slide(i, t)
 
-        # Match head / single-hit notes by sensor within Good of note.t.
+        # Match head / single-hit notes by sensor within the per-type window.
         best_i: int | None = None
-        best_abs = GOOD + 1.0
+        best_abs = float("inf")
         for i, note in enumerate(self.notes):
             if self.matched[i]:
                 continue
@@ -109,18 +127,19 @@ class Judge:
                 continue
             if note.type == "slide" and self.slide_next[i] > 0:
                 continue
-            dt = abs(note.t - t)
-            if dt <= GOOD and dt < best_abs:
-                best_abs = dt
+            err = _match_error(note, t)
+            if err is not None and err < best_abs:
+                best_abs = err
                 best_i = i
         if best_i is None:
             return None
 
         note = self.notes[best_i]
-        judgment = _window_judgment(note.t - t)
+        judgment, timing = _judge_hit(note, t)
         if note.type == "slide" and note.slide is not None:
             self.slide_next[best_i] = 1
             self.head_judgment[best_i] = judgment
+            self.head_timing[best_i] = timing
             if len(note.slide.path) <= 1:
                 self._apply(best_i, judgment)
                 return HitEvent(
@@ -129,6 +148,7 @@ class Judge:
                     judgment=judgment,
                     note_index=best_i,
                     sensor=sensor,
+                    timing=timing,
                 )
             # Head accepted; body still in progress (not a final score event yet).
             return HitEvent(
@@ -137,6 +157,7 @@ class Judge:
                 judgment=judgment,
                 note_index=best_i,
                 sensor=sensor,
+                timing=timing,
             )
 
         self._apply(best_i, judgment)
@@ -146,6 +167,7 @@ class Judge:
             judgment=judgment,
             note_index=best_i,
             sensor=sensor,
+            timing=timing,
         )
 
     def press_button(self, button: int, t: float) -> HitEvent | None:
@@ -169,6 +191,7 @@ class Judge:
                                 judgment="miss",
                                 note_index=i,
                                 sensor=note.slide.end_sensor,
+                                timing=None,
                             )
                         )
                     continue
@@ -181,11 +204,12 @@ class Judge:
                             judgment="miss",
                             note_index=i,
                             sensor=note.sensor,
+                            timing=None,
                         )
                     )
                 continue
 
-            if now - note.t > GOOD:
+            if now - note.t > _late_window(note):
                 self._apply(i, "miss")
                 events.append(
                     HitEvent(
@@ -194,6 +218,7 @@ class Judge:
                         judgment="miss",
                         note_index=i,
                         sensor=note.sensor,
+                        timing=None,
                     )
                 )
         return events
@@ -235,9 +260,10 @@ class Judge:
                 continue
 
             tth = note.t - now
+            late = _late_window(note)
             # Holds stay visible until release end.
             if note.type in ("hold", "touch_hold") and note.end is not None:
-                if now > note.end + GOOD:
+                if now > note.end + late:
                     continue
                 if now < note.t - look_ahead_s:
                     continue
@@ -247,13 +273,19 @@ class Judge:
                         if look_ahead_s <= 0
                         else max(0.0, min(1.0, 1.0 - (note.t - now) / look_ahead_s))
                     )
+                    hold_phase = "approach"
                 else:
                     span = max(note.end - note.t, 1e-6)
                     progress = max(0.0, min(1.0, (now - note.t) / span))
-                active.append(self._note_payload(note, note.sensor, progress))
+                    hold_phase = "sustain"
+                active.append(
+                    self._note_payload(
+                        note, note.sensor, progress, hold_phase=hold_phase
+                    )
+                )
                 continue
 
-            if tth < -GOOD or tth > look_ahead_s:
+            if tth < -late or tth > look_ahead_s:
                 continue
             if look_ahead_s <= 0:
                 progress = 1.0
@@ -264,7 +296,13 @@ class Judge:
             )
         return active
 
-    def _note_payload(self, note: Note, sensor: str, progress: float) -> dict:
+    def _note_payload(
+        self,
+        note: Note,
+        sensor: str,
+        progress: float,
+        hold_phase: str | None = None,
+    ) -> dict:
         row: dict = {
             "t": note.t,
             "button": note.button,
@@ -281,6 +319,8 @@ class Judge:
         }
         if note.end is not None:
             row["end"] = note.end
+        if hold_phase is not None:
+            row["hold_phase"] = hold_phase
         if note.slide is not None:
             row["path"] = list(note.slide.path)
             row["slide"] = note.slide.to_dict()
@@ -320,10 +360,14 @@ class Judge:
         path = note.slide.path
         self.slide_next[index] += 1
         sensor = path[self.slide_next[index] - 1]
+        stored = self.head_judgment[index] or "critical"
+        stored_timing = self.head_timing[index]
         if self.slide_next[index] >= len(path):
-            judgment = self.head_judgment[index] or "perfect"
+            judgment: Judgment = stored
+            timing: Timing | None = stored_timing
             if t > note.slide.end_t:
                 judgment = "miss"
+                timing = None
             self._apply(index, judgment)
             return HitEvent(
                 t=t,
@@ -331,20 +375,24 @@ class Judge:
                 judgment=judgment,
                 note_index=index,
                 sensor=sensor,
+                timing=timing,
             )
         # Intermediate waypoint: report head judgment echo without scoring again.
-        judgment = self.head_judgment[index] or "perfect"
         return HitEvent(
             t=t,
             button=note.button,
-            judgment=judgment,
+            judgment=stored,
             note_index=index,
             sensor=sensor,
+            timing=None,
         )
 
     def _apply(self, index: int, judgment: Judgment) -> None:
         self.matched[index] = True
-        if judgment == "perfect":
+        if judgment == "critical":
+            self.score.critical += 1
+            self.score.combo += 1
+        elif judgment == "perfect":
             self.score.perfect += 1
             self.score.combo += 1
         elif judgment == "great":
@@ -361,13 +409,76 @@ class Judge:
             raise ValueError(f"unknown judgment: {_exhaustive}")
 
 
-def _window_judgment(delta: float) -> Judgment:
-    """delta = note.t - press.t; uses absolute timing error."""
+def _late_window(note: Note) -> float:
+    nt = note.type
+    if nt == "touch" or nt == "touch_hold":
+        return TOUCH_GOOD
+    if nt == "tap" or nt == "hold" or nt == "slide":
+        return GOOD
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
+
+
+def _match_error(note: Note, t: float) -> float | None:
+    """Absolute error if press at t is inside this note's match window."""
+    delta = note.t - t
+    nt = note.type
+    if nt == "touch" or nt == "touch_hold":
+        # Early only to 150ms; late extends to 300ms.
+        if delta > TOUCH_CRITICAL or -delta > TOUCH_GOOD:
+            return None
+        return abs(delta)
+    if nt == "tap" or nt == "hold" or nt == "slide":
+        if abs(delta) > GOOD:
+            return None
+        return abs(delta)
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
+
+
+def _judge_hit(note: Note, t: float) -> tuple[Judgment, Timing | None]:
+    if note.is_ex:
+        return "critical", None
+    nt = note.type
+    delta = note.t - t
+    if nt == "tap" or nt == "hold" or nt == "slide":
+        return _judge_tap(delta)
+    if nt == "touch" or nt == "touch_hold":
+        return _judge_touch(delta)
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
+
+
+def _timing_for_delta(delta: float) -> Timing:
+    return "fast" if delta > 0 else "late"
+
+
+def _judge_tap(delta: float) -> tuple[Judgment, Timing | None]:
     err = abs(delta)
+    if err <= CRITICAL:
+        return "critical", None
+    timing = _timing_for_delta(delta)
     if err <= PERFECT:
-        return "perfect"
+        return "perfect", timing
     if err <= GREAT:
-        return "great"
+        return "great", timing
     if err <= GOOD:
-        return "good"
-    return "miss"
+        return "good", timing
+    return "miss", None
+
+
+def _judge_touch(delta: float) -> tuple[Judgment, Timing | None]:
+    if delta >= 0:
+        if delta <= TOUCH_CRITICAL:
+            return "critical", None
+        return "miss", None
+    late = -delta
+    if late <= TOUCH_CRITICAL:
+        return "critical", None
+    if late <= TOUCH_PERFECT:
+        return "perfect", "late"
+    if late <= TOUCH_GREAT:
+        return "great", "late"
+    if late <= TOUCH_GOOD:
+        return "good", "late"
+    return "miss", None

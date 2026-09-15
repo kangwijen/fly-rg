@@ -18,3 +18,5 @@ tools/majsimai_export/obj/
 charts/
 *.log
 docs/
+sources/*
+!sources/README.md

@@ -1,7 +1,8 @@
-export type Judgment = "perfect" | "great" | "good" | "miss";
+export type Judgment = "critical" | "perfect" | "great" | "good" | "miss";
 
 export interface Score {
   combo: number;
+  critical: number;
   perfect: number;
   great: number;
   good: number;
@@ -41,6 +42,7 @@ export interface ActiveNote {
   sensor?: string;
   type?: string;
   end?: number | null;
+  hold_phase?: "approach" | "sustain";
   path?: string[];
   slide?: SlideInfo | null;
   is_break?: boolean;
@@ -114,6 +116,7 @@ export interface HitMessage {
   judgment: Judgment;
   sensor?: string | null;
   t: number;
+  timing?: "fast" | "late" | null;
 }
 
 export interface EndMessage {

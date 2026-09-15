@@ -13,14 +13,15 @@ from typing import Literal
 
 Area = Literal["A", "B", "C", "D", "E"]
 
-# Radii of zone centers (relative to outer playfield).
+# Zone-center radii on the unit disk (Unity distance / 4.8).
+# From MajdataView TouchDrop.GetAreaPos in local sources/; do not copy C#.
 # Outer ring is one band of 16 A/D wedges; E sits in the B-ring gaps.
 RADIUS = {
     "C": 0.0,
-    "B": 0.36,
-    "E": 0.54,
-    "A": 0.81,
-    "D": 0.81,
+    "B": 0.479,
+    "E": 0.625,
+    "A": 0.854,
+    "D": 0.854,
 }
 
 

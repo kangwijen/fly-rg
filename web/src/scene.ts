@@ -4,7 +4,7 @@ import { Cabinet } from "./cabinet";
 import { FruitFly } from "./fly";
 import type { ActiveNote, Pose } from "./protocol";
 import { RingDisplay } from "./ring";
-import { buttonToSensor, pathPoint, sensorXY } from "./sensors";
+import { pathPoint, sensorXY } from "./sensors";
 
 export class ArcadeScene {
   readonly ring = new RingDisplay();
@@ -20,7 +20,6 @@ export class ArcadeScene {
   private running = false;
   private viewport: HTMLElement;
   private resizeObserver: ResizeObserver;
-  private aimSensor: string | null = "A5";
   private activeNotes: ActiveNote[] = [];
   private handL: string | null = null;
   private handR: string | null = null;
@@ -125,13 +124,11 @@ export class ArcadeScene {
   }
 
   setAimSensor(sensor: string | null): void {
-    this.aimSensor = sensor;
     if (sensor) this.fly.setAimSensor(sensor);
   }
 
   setAimButton(button: number | null): void {
     if (button == null) return;
-    this.aimSensor = buttonToSensor(button);
     this.fly.setAimButton(button);
   }
 
@@ -163,15 +160,14 @@ export class ArcadeScene {
     this.fly.setScreenNormal(this._normal);
   }
 
-  /** Both foreleg targets from decoder-assigned sensors. */
-  private tipPair(): { left: { x: number; y: number }; right: { x: number; y: number } } {
-    const left = this.handContact(this.handL) ?? this.handContact(this.aimSensor);
-    const right = this.handContact(this.handR);
-    const idleL = sensorXY("A4");
-    const idleR = sensorXY("A5");
+  /** Pad targets, or null so the fly tucks that hand. */
+  private tipPair(): {
+    left: { x: number; y: number } | null;
+    right: { x: number; y: number } | null;
+  } {
     return {
-      left: left ?? idleL,
-      right: right ?? (left && !this.handR ? left : idleR),
+      left: this.handContact(this.handL),
+      right: this.handContact(this.handR),
     };
   }
 
@@ -182,7 +178,7 @@ export class ArcadeScene {
         n.type === "slide" &&
         n.path != null &&
         n.path.length > 1 &&
-        (n.sensor === sensor || n.path.includes(sensor)),
+        n.sensor === sensor,
     );
     if (slide) return slideTipXY(slide);
     return sensorXY(sensor);
@@ -214,9 +210,13 @@ export class ArcadeScene {
     this.syncFlyContacts();
 
     const pair = this.tipPair();
-    this.cabinet.sensorWorldPos(pair.left.x, pair.left.y, this._leftAim);
-    this.cabinet.sensorWorldPos(pair.right.x, pair.right.y, this._rightAim);
-    this.fly.update(this.pose, elapsed, this._leftAim, this._rightAim);
+    const leftAim = pair.left
+      ? this.cabinet.sensorWorldPos(pair.left.x, pair.left.y, this._leftAim)
+      : null;
+    const rightAim = pair.right
+      ? this.cabinet.sensorWorldPos(pair.right.x, pair.right.y, this._rightAim)
+      : null;
+    this.fly.update(this.pose, elapsed, leftAim, rightAim);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };

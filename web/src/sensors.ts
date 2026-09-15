@@ -3,24 +3,28 @@
 export type Area = "A" | "B" | "C" | "D" | "E";
 
 /**
- * Radii of zone centers (relative to outer playfield).
+ * Zone-center radii on the unit disk (Unity distance / 4.8).
+ * From MajdataView TouchDrop.GetAreaPos in local sources/; do not copy C#.
  * Outer ring is one band of 16 A/D wedges; E sits in the B-ring gaps.
  */
 export const RADIUS: Record<Area, number> = {
   C: 0,
-  B: 0.36,
-  E: 0.54,
-  A: 0.81,
-  D: 0.81,
+  B: 0.479,
+  E: 0.625,
+  A: 0.854,
+  D: 0.854,
 };
 
-/** Pad outline (unit disk). Shared by the overlay so hit points sit in-cell. */
+/**
+ * Pad outline (unit disk). Shared by the overlay so hit points sit in-cell.
+ * Sized so C almost kisses B and B octagons fill the ring (cabinet photo + RADIUS).
+ */
 export const PAD = {
-  cR: 0.195,
-  bOct: 0.115,
-  eRadial: 0.09,
-  eTangent: 0.08,
-  adInner: 0.63,
+  cR: 0.32,
+  bOct: 0.145,
+  eRadial: 0.08,
+  eTangent: 0.07,
+  adInner: 0.62,
   adOuter: 0.995,
   adHalf: Math.PI / 16,
 } as const;

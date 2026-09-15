@@ -89,14 +89,18 @@ class NeuronAtlas:
         *,
         aim: float = 0.0,
         strike: float = 0.0,
+        strike_l: float | None = None,
+        strike_r: float | None = None,
         fired_count: int = 0,
         step: int = 0,
     ) -> list[int]:
         """Pick display neurons to flash this frame from drive + motor state."""
         rng = random.Random((step * 9973) ^ fired_count)
         out: list[int] = []
+        tap_l = strike if strike_l is None else strike_l
+        tap_r = strike if strike_r is None else strike_r
 
-        def take(group: str, amount: float, scale: float = 18.0) -> None:
+        def take(group: str, amount: float, scale: float = 48.0) -> None:
             ids = self.groups.get(group) or []
             if not ids or amount <= 0:
                 return
@@ -105,29 +109,35 @@ class NeuronAtlas:
             start = (step * 3) % max(1, len(ids))
             for j in range(k):
                 out.append(ids[(start + j) % len(ids)])
-            if amount > 0.4 and ids:
-                out.append(ids[rng.randrange(len(ids))])
+            extras = 1 + int(amount > 0.4) + int(amount > 0.75)
+            if amount > 0.15 and ids:
+                for _ in range(extras):
+                    out.append(ids[rng.randrange(len(ids))])
 
         take("loomL", drive.get("loomL", 0.0))
         take("loomR", drive.get("loomR", 0.0))
         take("threatL", drive.get("threatL", 0.0))
         take("threatR", drive.get("threatR", 0.0))
-        take("chaseL", drive.get("chaseL", 0.0), scale=14.0)
-        take("chaseR", drive.get("chaseR", 0.0), scale=14.0)
+        take("chaseL", drive.get("chaseL", 0.0), scale=52.0)
+        take("chaseR", drive.get("chaseR", 0.0), scale=52.0)
 
-        if aim < -0.15:
-            take("dna02L", abs(aim), scale=12.0)
-        elif aim > 0.15:
-            take("dna02R", abs(aim), scale=12.0)
+        take(
+            "dna02L",
+            max(-aim, 0.0) + drive.get("chaseL", 0.0) + drive.get("loomL", 0.0),
+            scale=52.0,
+        )
+        take(
+            "dna02R",
+            max(aim, 0.0) + drive.get("chaseR", 0.0) + drive.get("loomR", 0.0),
+            scale=52.0,
+        )
+        take("dnp01L", tap_l + drive.get("threatL", 0.0), scale=56.0)
+        take("dnp01R", tap_r + drive.get("threatR", 0.0), scale=56.0)
 
-        if strike > 0.2:
-            side = "dnp01L" if aim <= 0 else "dnp01R"
-            take(side, strike, scale=16.0)
-
-        # Sparse background chatter so the map feels alive.
+        # Background chatter scales with how many real cells fired this step.
         other = self.groups.get("other") or []
         if other:
-            chatter = 4 + (fired_count % 7)
+            chatter = 12 + min(72, max(0, fired_count))
             start = step % len(other)
             for j in range(chatter):
                 out.append(other[(start + j * 11) % len(other)])

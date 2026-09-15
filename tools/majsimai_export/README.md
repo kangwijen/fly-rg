@@ -2,14 +2,14 @@
 
 Optional .NET 8 console tool that converts Simai `maidata.txt` into the fly-rg timed-note JSON schema.
 
-This project builds **without** MajSimai. The default path is a self-contained **subset** exporter with the same capabilities as the Python `parse_simai_subset` loader:
+This project builds **without** MajSimai. The default path is a self-contained **subset** exporter (taps and holds only — the Python server already parses full Simai itself):
 
 - Metadata: `&title=`, `&artist=`, `&first=` (maps to JSON `offset`)
 - Timing: `(bpm)`, `{divisor}`, `{#seconds}`
 - Notes: taps `1`..`8`, break `1b`, holds `1h[x:y]` / `1h[#seconds]`, each `/`
 - Slides and touch are skipped (warning on stderr)
 
-Python already ships its own subset parser, so this tool is optional (handy for CI, bulk export, or a future full MajSimai bridge).
+Python ships its own full Simai parser (`fly_rg/chart.py`), so this tool is optional (handy for CI or bulk export).
 
 ## Requirements
 

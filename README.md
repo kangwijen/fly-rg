@@ -47,6 +47,8 @@ Terminal 1:
 python -m fly_rg.play --mock
 ```
 
+The server listens on `ws://127.0.0.1:8765` — override with `--host` / `--port`, and point the web client elsewhere with `?ws=host:port` on the page URL. A `fly-rg` console script is installed alongside the module (`--speed`, `--look-ahead`, `--dt` also available).
+
 Terminal 2:
 
 ```bash
@@ -69,14 +71,14 @@ python -m fly_rg.play --device cuda
 
 ## Zip layout
 
-Files may sit in a subfolder. Required names (case-insensitive):
+Files may sit in a subfolder. Names are case-insensitive; only `maidata.txt` is required:
 
 | File | Role |
 | --- | --- |
 | `maidata.txt` | Simai chart |
-| `track.ogg` / `track.mp3` | Audio |
-| `bg.png` / `bg.jpg` | Jacket behind sensors |
-| `pv.mp4` | Optional video behind sensors (preferred over bg when present) |
+| `track.ogg` / `track.mp3` / `track.wav` | Audio (silent without it) |
+| `bg.png` / `bg.jpg` / `bg.jpeg` / `bg.webp` | Jacket behind sensors |
+| `pv.mp4` / `pv.webm` | Optional video behind sensors (preferred over bg when present) |
 
 ## Chart support
 
@@ -87,7 +89,7 @@ Full Simai ([notation reference](https://w.atwiki.jp/simai/pages/1003.html) / [M
 - HOLD / BREAK HOLD / EX HOLD (including short `1h`)
 - TOUCH / TOUCH HOLD / hanabi (`f`) on A–E
 - Slides: `- > < ^ v V p q s z pp qq w`, chained, multi (`*`), wifi, `@` `?` `!` heads
-- Duration forms `[n:m]`, `[#sec]`, `[bpm#…]`, `[t##…]`
+- Duration forms `[n:m]`, `[#sec]`, `[bpm#…]`, `[<sec>##…]`
 
 Optional offline JSON export: `tools/majsimai_export` (timed-note schema).
 

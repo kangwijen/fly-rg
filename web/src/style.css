@@ -262,6 +262,72 @@ body,
   color: var(--muted);
 }
 
+.hud-judgments .judge-critical {
+  color: #c9b56a;
+}
+
+.hud-judgments .judge-critical b {
+  color: #ffe27a;
+}
+
+.hud-judgment-flash {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 700;
+  font-size: clamp(1.35rem, 3vw, 2.1rem);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+  opacity: 0;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.65);
+  white-space: nowrap;
+}
+
+.hud-judgment-flash.is-on {
+  animation: judgment-pop 0.7s ease-out;
+}
+
+.hud-judgment-flash[data-judgment="critical"] {
+  color: #ffe27a;
+}
+
+.hud-judgment-flash[data-judgment="perfect"] {
+  color: var(--cyan);
+}
+
+.hud-judgment-flash[data-judgment="great"] {
+  color: var(--good);
+}
+
+.hud-judgment-flash[data-judgment="good"] {
+  color: var(--amber);
+}
+
+.hud-judgment-flash[data-judgment="miss"] {
+  color: var(--miss);
+}
+
+@keyframes judgment-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -40%) scale(0.86);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -58%) scale(1.04);
+  }
+}
+
 .hud-judgments b {
   color: var(--ink);
   font-weight: 500;

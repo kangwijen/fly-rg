@@ -107,7 +107,7 @@ function boot(): void {
         scene.setPose(msg.pose);
         hud.setScore(msg.score);
         hud.setDrive(msg.drive);
-        brain.setState(msg.spikes ?? [], msg.spike_total ?? 0, msg.drive);
+        brain.setState(msg.spikes ?? [], msg.spike_total ?? 0, msg.drive, msg.pose);
         hud.setBrainMeta(neuronCount, msg.spike_total ?? 0);
         if (playing) media.sync(msg.t);
         applyBackground();
@@ -116,6 +116,7 @@ function boot(): void {
       case "hit": {
         const target = msg.sensor ?? msg.button;
         if (target != null) scene.ring.flashHit(target, msg.judgment);
+        hud.flashJudgment(msg.judgment, msg.timing);
         break;
       }
       case "end":

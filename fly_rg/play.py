@@ -124,6 +124,7 @@ async def _play_once(
                     button=miss.button,
                     sensor=miss.sensor,
                     judgment=miss.judgment,
+                    timing=miss.timing,
                 )
             )
 
@@ -136,6 +137,7 @@ async def _play_once(
                         button=hit.button,
                         sensor=hit.sensor,
                         judgment=hit.judgment,
+                        timing=hit.timing,
                     )
                 )
         if (
@@ -151,6 +153,7 @@ async def _play_once(
                         button=hit.button,
                         sensor=hit.sensor,
                         judgment=hit.judgment,
+                        timing=hit.timing,
                     )
                 )
         if (
@@ -167,6 +170,7 @@ async def _play_once(
                         button=hit.button,
                         sensor=hit.sensor,
                         judgment=hit.judgment,
+                        timing=hit.timing,
                     )
                 )
 
@@ -174,6 +178,8 @@ async def _play_once(
             last_drive,
             aim=dec.aim,
             strike=dec.strike,
+            strike_l=dec.strike_l,
+            strike_r=dec.strike_r,
             fired_count=len(fired_list),
             step=step_i,
         )

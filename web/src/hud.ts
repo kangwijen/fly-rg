@@ -1,14 +1,17 @@
-import type { Drive, Score } from "./protocol";
+import type { Drive, Judgment, Score } from "./protocol";
 import type { ConnectionState } from "./ws";
 
 const EMPTY_SCORE: Score = {
   combo: 0,
+  critical: 0,
   perfect: 0,
   great: 0,
   good: 0,
   miss: 0,
   accuracy: 0,
 };
+
+const JUDGMENT_FLASH_MS = 700;
 
 const EMPTY_DRIVE: Drive = {
   loomL: 0,
@@ -25,6 +28,40 @@ function pct(v: number): string {
   return `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
 }
 
+function judgmentWord(judgment: Judgment): string {
+  switch (judgment) {
+    case "critical":
+      return "CRITICAL PERFECT";
+    case "perfect":
+      return "PERFECT";
+    case "great":
+      return "GREAT";
+    case "good":
+      return "GOOD";
+    case "miss":
+      return "MISS";
+    default: {
+      const _exhaustive: never = judgment;
+      return _exhaustive;
+    }
+  }
+}
+
+function judgmentPopupText(
+  judgment: Judgment,
+  timing?: "fast" | "late" | null,
+): string {
+  if (judgment === "critical" || judgment === "miss") {
+    return judgmentWord(judgment);
+  }
+  const word = judgmentWord(judgment);
+  if (timing === "fast") return `${word} FAST`;
+  if (timing === "late") return `${word} LATE`;
+  if (timing == null) return word;
+  const _exhaustive: never = timing;
+  return _exhaustive;
+}
+
 export class Hud {
   private gameRoot: HTMLElement;
   private neuralRoot: HTMLElement;
@@ -33,10 +70,13 @@ export class Hud {
   private statusEl: HTMLElement;
   private comboEl: HTMLElement;
   private accuracyEl: HTMLElement;
+  private criticalEl: HTMLElement;
   private perfectEl: HTMLElement;
   private greatEl: HTMLElement;
   private goodEl: HTMLElement;
   private missEl: HTMLElement;
+  private judgmentFlashEl: HTMLElement;
+  private judgmentTimer = 0;
   private hintEl: HTMLElement;
   private metaEl: HTMLElement;
   private brainHost: HTMLElement;
@@ -49,6 +89,7 @@ export class Hud {
 
   constructor(gameOverlay: HTMLElement, neuralPane: HTMLElement) {
     gameOverlay.innerHTML = `
+      <div class="hud-judgment-flash" data-judgment-flash hidden></div>
       <div class="hud-title-block">
         <div class="hud-brand">fly-rg</div>
         <div class="hud-title" data-title>Upload a chart zip</div>
@@ -87,6 +128,7 @@ export class Hud {
         <div class="hud-combo"><span>COMBO</span><b data-combo>0</b></div>
         <div class="hud-accuracy" data-accuracy>0.0% ACC</div>
         <div class="hud-judgments">
+          <div class="judge-critical">CRITICAL <b data-critical>0</b></div>
           <div>PERFECT <b data-perfect>0</b></div>
           <div>GREAT <b data-great>0</b></div>
           <div>GOOD <b data-good>0</b></div>
@@ -121,7 +163,9 @@ export class Hud {
     this.metaEl = this.mustNeural("[data-meta]");
     this.comboEl = this.mustNeural("[data-combo]");
     this.accuracyEl = this.mustNeural("[data-accuracy]");
+    this.criticalEl = this.mustNeural("[data-critical]");
     this.perfectEl = this.mustNeural("[data-perfect]");
+    this.judgmentFlashEl = this.mustGame("[data-judgment-flash]");
     this.greatEl = this.mustNeural("[data-great]");
     this.goodEl = this.mustNeural("[data-good]");
     this.missEl = this.mustNeural("[data-miss]");
@@ -230,10 +274,25 @@ export class Hud {
   setScore(score: Score): void {
     this.comboEl.textContent = String(score.combo);
     this.accuracyEl.textContent = `${(score.accuracy * 100).toFixed(1)}% ACC`;
+    this.criticalEl.textContent = String(score.critical ?? 0);
     this.perfectEl.textContent = String(score.perfect);
     this.greatEl.textContent = String(score.great);
     this.goodEl.textContent = String(score.good);
     this.missEl.textContent = String(score.miss);
+  }
+
+  flashJudgment(judgment: Judgment, timing?: "fast" | "late" | null): void {
+    this.judgmentFlashEl.textContent = judgmentPopupText(judgment, timing);
+    this.judgmentFlashEl.dataset.judgment = judgment;
+    this.judgmentFlashEl.hidden = false;
+    this.judgmentFlashEl.classList.remove("is-on");
+    void this.judgmentFlashEl.offsetWidth;
+    this.judgmentFlashEl.classList.add("is-on");
+    window.clearTimeout(this.judgmentTimer);
+    this.judgmentTimer = window.setTimeout(() => {
+      this.judgmentFlashEl.classList.remove("is-on");
+      this.judgmentFlashEl.hidden = true;
+    }, JUDGMENT_FLASH_MS);
   }
 
   setDrive(drive: Drive): void {

@@ -1,7 +1,7 @@
 """Map upcoming notes to fly visual-projection inject drives.
 
-Mirrors the spirit of flybrain FeatureDetectors (sshfighter) without Eyes
-photoreceptors: drive LPLC2 (loom), LC4 (threat), and LC10a (chase) by side.
+Drive LPLC1+LPLC2 (loom), LC4+LC6 (threat), and LC10a+LC11+LC16 (chase)
+by side. Same six HUD keys: loom/chase/threat L/R.
 
 Sensor geometry comes from sensors.py (Majdata GetAreaPos). Targets the
 current sensor (note.sensor, or the next unfinished slide path node).
@@ -11,18 +11,22 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Never, Protocol
 
+from fly_rg.judge import GOOD
 from fly_rg.schema import Note
 from fly_rg.sensors import button_to_sensor, sensor_angle_rad, sensor_side
 
 DRIVE_KEYS = ("loomL", "loomR", "chaseL", "chaseR", "threatL", "threatR")
-CAP = 0.8
-LOOM_GAIN = 10.0
-LOOM_SIZE = 0.6
-THREAT_GAIN = 0.8
-CHASE_BASE = 0.6
-CHASE_GAIN = 0.2
+LOOM_TYPES = ("LPLC1", "LPLC2")
+THREAT_TYPES = ("LC4", "LC6")
+CHASE_TYPES = ("LC10a", "LC11", "LC16")
+CAP = 1.0
+LOOM_GAIN = 14.0
+LOOM_SIZE = 0.8
+THREAT_GAIN = 1.0
+CHASE_BASE = 0.7
+CHASE_GAIN = 0.35
 
 
 class BrainCells(Protocol):
@@ -49,10 +53,48 @@ def button_side(button: int) -> str:
 
 def note_target_sensor(note: Note, *, slide_next: int = 0) -> str:
     """Sensor the fly should aim at for this note right now."""
-    if note.type == "slide" and note.slide is not None and note.slide.path:
-        idx = min(max(slide_next, 0), len(note.slide.path) - 1)
-        return note.slide.path[idx]
-    return note.sensor
+    nt = note.type
+    if nt == "slide":
+        if note.slide is not None and note.slide.path:
+            idx = min(max(slide_next, 0), len(note.slide.path) - 1)
+            return note.slide.path[idx]
+        return note.sensor
+    if nt == "tap" or nt == "hold" or nt == "touch" or nt == "touch_hold":
+        return note.sensor
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
+
+
+def note_window_tth(
+    note: Note,
+    now: float,
+    look_ahead_s: float,
+    *,
+    slide_next: int = 0,
+) -> float | None:
+    """Time-to-hit proxy if the note is still in the inject/aim window."""
+    nt = note.type
+    if nt == "slide":
+        if note.slide is not None and slide_next > 0:
+            if now <= note.slide.end_t:
+                return max(note.slide.end_t - now, 1e-3)
+            return None
+        tth = note.t - now
+        if -GOOD <= tth <= look_ahead_s:
+            return max(tth, 0.0)
+        return None
+    if nt == "hold" or nt == "touch_hold":
+        end = note.end if note.end is not None else note.t + GOOD
+        if note.t - look_ahead_s <= now <= end:
+            return max(note.t - now, 0.0)
+        return None
+    if nt == "tap" or nt == "touch":
+        tth = note.t - now
+        if -GOOD <= tth <= look_ahead_s:
+            return max(tth, 0.0)
+        return None
+    _exhaustive: Never = nt
+    raise ValueError(f"unknown note type: {_exhaustive}")
 
 
 def _size_proxy(time_to_hit: float, look_ahead_s: float) -> float:
@@ -79,9 +121,18 @@ class NoteEncoder:
         self._cells: dict[str, dict[str, Any]] | None = None
         if brain is not None and not mock:
             self._cells = {
-                "loom": {"L": brain.cells(["LPLC2"], "L"), "R": brain.cells(["LPLC2"], "R")},
-                "threat": {"L": brain.cells(["LC4"], "L"), "R": brain.cells(["LC4"], "R")},
-                "chase": {"L": brain.cells(["LC10a"], "L"), "R": brain.cells(["LC10a"], "R")},
+                "loom": {
+                    "L": brain.cells(list(LOOM_TYPES), "L"),
+                    "R": brain.cells(list(LOOM_TYPES), "R"),
+                },
+                "threat": {
+                    "L": brain.cells(list(THREAT_TYPES), "L"),
+                    "R": brain.cells(list(THREAT_TYPES), "R"),
+                },
+                "chase": {
+                    "L": brain.cells(list(CHASE_TYPES), "L"),
+                    "R": brain.cells(list(CHASE_TYPES), "R"),
+                },
             }
 
     def encode(
@@ -96,22 +147,12 @@ class NoteEncoder:
         drive = {k: 0.0 for k in DRIVE_KEYS}
         approaching: list[tuple[Note, float, str]] = []
         for i, note in enumerate(notes):
-            sensor = note_target_sensor(
-                note, slide_next=0 if slide_next is None else slide_next[i]
+            nxt = 0 if slide_next is None else slide_next[i]
+            sensor = note_target_sensor(note, slide_next=nxt)
+            tth = note_window_tth(
+                note, now, look_ahead_s, slide_next=nxt
             )
-            # In-progress slides stay relevant until end_t.
-            if (
-                note.type == "slide"
-                and note.slide is not None
-                and slide_next is not None
-                and slide_next[i] > 0
-            ):
-                tth = max(0.0, note.slide.end_t - now)
-                if now <= note.slide.end_t:
-                    approaching.append((note, max(tth, 1e-3), sensor))
-                continue
-            tth = note.t - now
-            if 0.0 < tth <= look_ahead_s:
+            if tth is not None:
                 approaching.append((note, tth, sensor))
 
         for _note, tth, sensor in approaching:
@@ -120,14 +161,9 @@ class NoteEncoder:
             growth = _growth_proxy(tth, look_ahead_s, dt)
             loom = min(CAP, growth * LOOM_GAIN + size * LOOM_SIZE)
             threat = min(CAP, size * THREAT_GAIN)
+            chase = min(CAP, CHASE_BASE + CHASE_GAIN * size)
             drive[f"loom{side}"] = max(drive[f"loom{side}"], loom)
             drive[f"threat{side}"] = max(drive[f"threat{side}"], threat)
-
-        if approaching:
-            _nearest, tth, sensor = min(approaching, key=lambda x: x[1])
-            side = sensor_side(sensor)
-            size = _size_proxy(tth, look_ahead_s)
-            chase = min(CAP, CHASE_BASE + CHASE_GAIN * size)
             drive[f"chase{side}"] = max(drive[f"chase{side}"], chase)
 
         if self.mock or self._cells is None:

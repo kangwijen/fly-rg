@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fly_rg.judge import GOOD, GREAT, PERFECT, Judge
+from fly_rg.judge import GOOD, Judge
 from fly_rg.schema import Note, SlideInfo
 
 
@@ -14,20 +14,43 @@ def _notes() -> list[Note]:
     ]
 
 
-def test_perfect_great_good_windows():
-    j = Judge(_notes())
+def test_dx_windows():
+    j = Judge([Note(t=1.0, button=1, type="tap")])
     h = j.press(1, 1.0)
-    assert h is not None and h.judgment == "perfect"
-    assert h.sensor == "A1"
-    assert j.score.perfect == 1 and j.score.combo == 1
+    assert h is not None and h.judgment == "critical"
+    assert h.timing is None
+    assert j.score.critical == 1
 
-    h = j.press(2, 2.0 + PERFECT + 1e-4)
-    assert h is not None and h.judgment == "great"
-    assert j.score.great == 1 and j.score.combo == 2
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 1.020)
+    assert h is not None and h.judgment == "perfect" and h.timing == "late"
 
-    h = j.press(1, 3.0 + GREAT + 1e-4)
-    assert h is not None and h.judgment == "good"
-    assert j.score.good == 1 and j.score.combo == 3
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 0.980)
+    assert h is not None and h.judgment == "perfect" and h.timing == "fast"
+
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 1.060)
+    assert h is not None and h.judgment == "great" and h.timing == "late"
+
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    h = j.press(1, 1.120)
+    assert h is not None and h.judgment == "good" and h.timing == "late"
+
+    j = Judge([Note(t=1.0, button=1, type="tap")])
+    assert j.press(1, 1.160) is None
+    misses = j.auto_miss(1.160)
+    assert len(misses) == 1
+    assert misses[0].judgment == "miss"
+    assert misses[0].timing is None
+
+    j = Judge([Note(t=1.0, type="touch", sensor="B5")])
+    h = j.press("B5", 1.160)
+    assert h is not None and h.judgment == "perfect" and h.timing == "late"
+
+    j = Judge([Note(t=1.0, type="touch", sensor="B5")])
+    h = j.press("B5", 1.0)
+    assert h is not None and h.judgment == "critical" and h.timing is None
 
 
 def test_miss_breaks_combo_and_outside_window_ignored():
@@ -59,7 +82,7 @@ def test_accuracy():
     j.press(1, 1.0)
     j.press(2, 2.0)
     j.auto_miss(3.0 + GOOD + 0.01)
-    # 2 perfect, 1 miss -> (1+1+0)/3
+    # 2 critical + 1 miss -> 2/3
     assert abs(j.score.accuracy - (2.0 / 3.0)) < 1e-9
 
 
@@ -95,7 +118,9 @@ def test_slide_progress_and_complete():
     h = j.press("A5", 1.8)
     assert h is not None
     assert j.matched[0]
-    assert j.score.perfect == 1
+    assert j.score.critical == 1
+    assert h.judgment == "critical"
+    assert h.timing is None
 
 
 def test_slide_incomplete_misses():

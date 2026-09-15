@@ -1,4 +1,4 @@
-import type { BrainLayoutMessage, Drive } from "./protocol";
+import type { BrainLayoutMessage, Drive, Pose } from "./protocol";
 
 const SIZE = 520;
 
@@ -30,6 +30,7 @@ export class BrainView {
     threatL: 0,
     threatR: 0,
   };
+  private pose: Pose = { aim: 0, strike: 0, strike_l: 0, strike_r: 0 };
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -62,10 +63,11 @@ export class BrainView {
     }
   }
 
-  setState(spikes: number[], spikeTotal: number, drive: Drive): void {
+  setState(spikes: number[], spikeTotal: number, drive: Drive, pose?: Pose): void {
     this.lastSpikes = spikes;
     this.spikeTotal = spikeTotal;
     this.drive = drive;
+    if (pose) this.pose = pose;
   }
 
   draw(): void {
@@ -104,12 +106,18 @@ export class BrainView {
     this.tintGroup("chaseL", COLORS.chase, this.drive.chaseL);
     this.tintGroup("chaseR", COLORS.chase, this.drive.chaseR);
 
-    const aimOnL = this.drive.chaseL + this.drive.loomL > this.drive.chaseR + this.drive.loomR;
-    this.markCommand("dna02L", aimOnL && this.drive.chaseL + this.drive.loomL > 0.15);
-    this.markCommand("dna02R", !aimOnL && this.drive.chaseR + this.drive.loomR > 0.15);
-    const threat = Math.max(this.drive.threatL, this.drive.threatR);
-    this.markCommand("dnp01L", threat > 0.35 && aimOnL);
-    this.markCommand("dnp01R", threat > 0.35 && !aimOnL);
+    const strikeL = this.pose.strike_l ?? this.pose.strike;
+    const strikeR = this.pose.strike_r ?? this.pose.strike;
+    this.markCommand(
+      "dna02L",
+      this.pose.aim < -0.15 || this.drive.chaseL + this.drive.loomL > 0.15,
+    );
+    this.markCommand(
+      "dna02R",
+      this.pose.aim > 0.15 || this.drive.chaseR + this.drive.loomR > 0.15,
+    );
+    this.markCommand("dnp01L", strikeL > 0.2 || this.drive.threatL > 0.35);
+    this.markCommand("dnp01R", strikeR > 0.2 || this.drive.threatR > 0.35);
 
     ctx.fillStyle = COLORS.dim;
     ctx.font = "600 11px 'IBM Plex Mono', monospace";

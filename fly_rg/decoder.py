@@ -5,21 +5,24 @@ from __future__ import annotations
 import random
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Never, Protocol
 
-from fly_rg.encoder import note_target_sensor
+from fly_rg.encoder import note_target_sensor, note_window_tth
 from fly_rg.schema import Note
 from fly_rg.sensors import RADIUS, button_to_sensor, sensor_side, sensor_xy
 
-# Aim sectors when DNa02 prefers left vs right (A-button indices).
+# Aim sectors when DNa pool prefers left vs right (A-button indices).
 LEFT_BUTTONS = (8, 1, 2, 7)
 RIGHT_BUTTONS = (3, 4, 5, 6)
 
-STEER_WINDOW = 25  # steps (~0.5 s at dt=0.02)
-STEER_MARGIN = 2
-TAP_WINDOW = 5  # steps (~0.1 s)
-TAP_SPIKES = 2
-TAP_COOLDOWN_S = 0.08
+STEER_TYPES = ("DNa01", "DNa02", "DNa03", "DNa04")
+TAP_TYPES = ("DNp01", "DNp02", "DNp03", "DNb01", "DNb02")
+
+STEER_WINDOW = 7  # steps (~0.14 s at dt=0.02)
+STEER_MARGIN = 1
+TAP_WINDOW = 3  # steps (~0.06 s)
+TAP_SPIKES = 1
+TAP_COOLDOWN_S = 0.05
 PERFECT_WINDOW_S = 0.033
 
 
@@ -42,6 +45,10 @@ class DecodeResult:
     tap_r: bool = False
     strike_l: float = 0.0
     strike_r: float = 0.0
+    steer_l: float = 0.0
+    steer_r: float = 0.0
+    tap_rate_l: float = 0.0
+    tap_rate_r: float = 0.0
 
 
 def _as_index_set(indices: Any) -> set[int]:
@@ -67,7 +74,7 @@ def _sensor_to_button(sensor: str | None) -> int | None:
 
 
 class ActionDecoder:
-    """DNa02 L/R -> aim; DNp01 -> tap, mapped onto approaching sensors."""
+    """DNa01-04 L/R -> aim; DNp01-03 and DNb01-02 -> tap onto sensors."""
 
     def __init__(
         self,
@@ -81,24 +88,30 @@ class ActionDecoder:
         self.rng = random.Random(seed)
         self._last_tap_t = -1e9
         self._history: deque[tuple[int, int, int, int]] = deque(maxlen=STEER_WINDOW)
-        self._dna02_l: set[int] = set()
-        self._dna02_r: set[int] = set()
+        self._steer_l_idx: set[int] = set()
+        self._steer_r_idx: set[int] = set()
         self._tap_l_idx: set[int] = set()
         self._tap_r_idx: set[int] = set()
         self._brain = brain
+        self.steer_l = 0.0
+        self.steer_r = 0.0
+        self.tap_l = 0.0
+        self.tap_r = 0.0
+        self.tap_rate_l = 0.0
+        self.tap_rate_r = 0.0
         if brain is not None and not mock:
-            tap_types = tap_types or ["DNp01"]
-            self._dna02_l = _as_index_set(brain.cells(["DNa02"], "L"))
-            self._dna02_r = _as_index_set(brain.cells(["DNa02"], "R"))
-            self._tap_l_idx = _as_index_set(brain.cells(tap_types, "L"))
-            self._tap_r_idx = _as_index_set(brain.cells(tap_types, "R"))
+            tap_pool = tap_types if tap_types is not None else list(TAP_TYPES)
+            self._steer_l_idx = _as_index_set(brain.cells(list(STEER_TYPES), "L"))
+            self._steer_r_idx = _as_index_set(brain.cells(list(STEER_TYPES), "R"))
+            self._tap_l_idx = _as_index_set(brain.cells(tap_pool, "L"))
+            self._tap_r_idx = _as_index_set(brain.cells(tap_pool, "R"))
 
     def observe(self, fired: Any) -> None:
         if self.mock:
             return
         fired_set = _as_index_set(fired)
-        l = len(fired_set & self._dna02_l)
-        r = len(fired_set & self._dna02_r)
+        l = len(fired_set & self._steer_l_idx)
+        r = len(fired_set & self._steer_r_idx)
         tap_l = len(fired_set & self._tap_l_idx)
         tap_r = len(fired_set & self._tap_r_idx)
         self._history.append((l, r, tap_l, tap_r))
@@ -131,6 +144,16 @@ class ActionDecoder:
         tap_r = sum(x[3] for x in tap_win)
         return float(l), float(r), float(tap_l), float(tap_r)
 
+    def _store_rates(
+        self, steer_l: float, steer_r: float, tap_l: float, tap_r: float
+    ) -> None:
+        self.steer_l = float(steer_l)
+        self.steer_r = float(steer_r)
+        self.tap_l = float(tap_l)
+        self.tap_r = float(tap_r)
+        self.tap_rate_l = float(tap_l)
+        self.tap_rate_r = float(tap_r)
+
     def _active_targets(
         self,
         now: float,
@@ -141,20 +164,10 @@ class ActionDecoder:
         out: list[tuple[Note, str]] = []
         for i, note in enumerate(notes):
             nxt = 0 if slide_next is None else slide_next[i]
+            if note_window_tth(note, now, look_ahead_s, slide_next=nxt) is None:
+                continue
             sensor = note_target_sensor(note, slide_next=nxt)
-            if note.type == "slide" and note.slide is not None:
-                if nxt > 0 and now <= note.slide.end_t:
-                    out.append((note, sensor))
-                    continue
-                if 0.0 < (note.t - now) <= look_ahead_s:
-                    out.append((note, sensor))
-                continue
-            if note.type in ("hold", "touch_hold") and note.end is not None:
-                if note.t - look_ahead_s <= now <= note.end:
-                    out.append((note, sensor))
-                continue
-            if 0.0 < (note.t - now) <= look_ahead_s:
-                out.append((note, sensor))
+            out.append((note, sensor))
         return out
 
     def _decode_spikes(
@@ -165,6 +178,7 @@ class ActionDecoder:
         slide_next: list[int] | None,
     ) -> DecodeResult:
         l, r, tap_l_count, tap_r_count = self._rates()
+        self._store_rates(l, r, tap_l_count, tap_r_count)
         diff = r - l
         if abs(diff) < STEER_MARGIN:
             aim = 0.0
@@ -216,6 +230,10 @@ class ActionDecoder:
             tap_r=tap_r,
             strike_l=strike_l,
             strike_r=strike_r,
+            steer_l=l,
+            steer_r=r,
+            tap_rate_l=tap_l_count,
+            tap_rate_r=tap_r_count,
         )
 
     def _decode_mock(
@@ -232,6 +250,7 @@ class ActionDecoder:
         chase_r = float(drive.get("chaseR", 0.0))
         left_strength = loom_l + chase_l + float(drive.get("threatL", 0.0))
         right_strength = loom_r + chase_r + float(drive.get("threatR", 0.0))
+        self._store_rates(left_strength, right_strength, left_strength, right_strength)
         total = left_strength + right_strength
         if total <= 1e-9:
             aim = 0.0
@@ -268,12 +287,20 @@ class ActionDecoder:
             for i, note in enumerate(notes):
                 nxt = 0 if slide_next is None else slide_next[i]
                 sensor = note_target_sensor(note, slide_next=nxt)
-                if note.type == "slide" and note.slide is not None and nxt > 0:
-                    if now <= note.slide.end_t:
+                nt = note.type
+                if nt == "slide":
+                    if note.slide is not None and nxt > 0:
+                        if now <= note.slide.end_t:
+                            in_window.append((note, sensor))
+                    elif abs(note.t - now) <= PERFECT_WINDOW_S:
                         in_window.append((note, sensor))
                     continue
-                if abs(note.t - now) <= PERFECT_WINDOW_S:
-                    in_window.append((note, sensor))
+                if nt == "tap" or nt == "hold" or nt == "touch" or nt == "touch_hold":
+                    if abs(note.t - now) <= PERFECT_WINDOW_S:
+                        in_window.append((note, sensor))
+                    continue
+                _exhaustive: Never = nt
+                raise ValueError(f"unknown note type: {_exhaustive}")
             window_sensors = {s for _n, s in in_window}
             p = min(0.95, 0.35 + 0.8 * inject_strength)
             if hand_l and hand_l in window_sensors and left_strength > 0.05:
@@ -304,6 +331,10 @@ class ActionDecoder:
             tap_r=tap_r,
             strike_l=float(strike_l),
             strike_r=float(strike_r),
+            steer_l=float(left_strength),
+            steer_r=float(right_strength),
+            tap_rate_l=float(left_strength),
+            tap_rate_r=float(right_strength),
         )
 
 
@@ -322,32 +353,44 @@ def _best_sensor(pool: list[tuple[Note, str]], aim: float) -> str | None:
     return min(pool, key=lambda ns: (ns[0].t, abs(_sensor_aim_score(ns[1]) - aim)))[1]
 
 
+def _unique_soonest(active: list[tuple[Note, str]]) -> list[str]:
+    seen: list[str] = []
+    for _note, sensor in sorted(active, key=lambda ns: ns[0].t):
+        if sensor not in seen:
+            seen.append(sensor)
+    return seen
+
+
 def _assign_hands(
     aim: float,
     left_strength: float,
     right_strength: float,
     active: list[tuple[Note, str]],
 ) -> tuple[str | None, str | None]:
-    """Place hands from L/R descending drive, not from a hardcoded x-sort."""
-    left_notes = [(n, s) for n, s in active if sensor_side(s) == "L"]
-    right_notes = [(n, s) for n, s in active if sensor_side(s) == "R"]
-    l_on = left_strength > HAND_ON
-    r_on = right_strength > HAND_ON
-    hand_l = _best_sensor(left_notes, aim) if l_on else None
-    hand_r = _best_sensor(right_notes, aim) if r_on else None
-    if l_on and r_on:
-        if hand_l is None and hand_r is not None:
-            hand_l = hand_r
-        elif hand_r is None and hand_l is not None:
-            hand_r = hand_l
-        elif hand_l is None and hand_r is None:
-            shared = _best_sensor(active, aim)
-            hand_l = hand_r = shared
-    elif l_on and hand_l is None:
-        hand_l = _best_sensor(active, aim)
-    elif r_on and hand_r is None:
-        hand_r = _best_sensor(active, aim)
-    return hand_l, hand_r
+    """Two distinct sensors when two notes exist. Never stack both hands on one pad."""
+    sensors = _unique_soonest(active)
+    if not sensors:
+        return None, None
+
+    leftish = [s for s in sensors if sensor_side(s) == "L"]
+    rightish = [s for s in sensors if sensor_side(s) == "R"]
+
+    if len(sensors) >= 2:
+        if leftish and rightish:
+            return leftish[0], rightish[0]
+        a, b = sensors[0], sensors[1]
+        if _sensor_aim_score(a) <= _sensor_aim_score(b):
+            return a, b
+        return b, a
+
+    only = sensors[0]
+    if left_strength > right_strength + HAND_ON:
+        return only, None
+    if right_strength > left_strength + HAND_ON:
+        return None, only
+    if sensor_side(only) == "L":
+        return only, None
+    return None, only
 
 
 def _pick_aim_sensor(
@@ -416,5 +459,7 @@ __all__ = [
     "DecodeResult",
     "LEFT_BUTTONS",
     "RIGHT_BUTTONS",
+    "STEER_TYPES",
+    "TAP_TYPES",
     "button_side",
 ]
