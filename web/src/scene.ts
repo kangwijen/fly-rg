@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Cabinet } from "./cabinet";
 import { FruitFly } from "./fly";
 import type { Pose } from "./protocol";
@@ -13,6 +14,7 @@ export class ArcadeScene {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
+  private controls: OrbitControls;
   private clock = new THREE.Clock();
   private pose: Pose = { aim: 0, strike: 0 };
   private running = false;
@@ -37,27 +39,27 @@ export class ArcadeScene {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x05070c);
-    this.scene.fog = new THREE.Fog(0x05070c, 8, 22);
+    this.scene.fog = new THREE.Fog(0x05070c, 10, 28);
 
-    this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 50);
+    this.camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
 
     const ambient = new THREE.AmbientLight(0x6a7d96, 0.55);
     this.scene.add(ambient);
 
-    const key = new THREE.DirectionalLight(0xfff2e0, 1.35);
-    key.position.set(2.2, 5.5, 4.5);
+    const key = new THREE.DirectionalLight(0xfff2e0, 1.45);
+    key.position.set(3.2, 5.2, 4.2);
     this.scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0x3de0d0, 0.35);
-    fill.position.set(-3.5, 2.5, 2.5);
+    const fill = new THREE.DirectionalLight(0x3de0d0, 0.4);
+    fill.position.set(-3.5, 2.8, 2.8);
     this.scene.add(fill);
 
-    const rim = new THREE.PointLight(0xe24f9c, 0.55, 12);
-    rim.position.set(-1.2, 2.4, -0.8);
+    const rim = new THREE.PointLight(0xe24f9c, 0.55, 14);
+    rim.position.set(-1.4, 2.6, -0.6);
     this.scene.add(rim);
 
     const floor = new THREE.Mesh(
-      new THREE.CircleGeometry(8, 48),
+      new THREE.CircleGeometry(9, 48),
       new THREE.MeshStandardMaterial({
         color: 0x0a1018,
         roughness: 0.92,
@@ -69,7 +71,7 @@ export class ArcadeScene {
     this.scene.add(floor);
 
     const floorGlow = new THREE.Mesh(
-      new THREE.RingGeometry(1.6, 3.2, 48),
+      new THREE.RingGeometry(1.6, 3.4, 48),
       new THREE.MeshBasicMaterial({
         color: 0x123048,
         transparent: true,
@@ -86,6 +88,16 @@ export class ArcadeScene {
 
     this.fly = new FruitFly();
     this.scene.add(this.fly.group);
+
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.08;
+    this.controls.enablePan = true;
+    this.controls.minDistance = 1.6;
+    this.controls.maxDistance = 8;
+    this.controls.minPolarAngle = 0.35;
+    this.controls.maxPolarAngle = Math.PI * 0.62;
+    this.controls.target.set(0, 1.55, 0.45);
 
     this.syncFlyContacts();
     this.frameCamera();
@@ -123,12 +135,12 @@ export class ArcadeScene {
 
   dispose(): void {
     this.stop();
+    this.controls.dispose();
     this.resizeObserver.disconnect();
     this.renderer.dispose();
   }
 
   private syncFlyContacts(): void {
-    // Fly faces -Z into the glass (yaw PI): anatomical left reaches +screen X (A4).
     const left = sensorXY("A4");
     const right = sensorXY("A5");
     this.cabinet.sensorWorldPos(left.x, left.y, this._leftIdle);
@@ -138,11 +150,14 @@ export class ArcadeScene {
     this.fly.setScreenNormal(this._normal);
   }
 
+  /** Default 3/4 view from behind-right, looking over the fly at the playfield. */
   private frameCamera(): void {
     this.cabinet.screenCenterWorld(this._lookAt);
-    // Over-shoulder: camera behind fly, looking into the playfield screen.
-    this.camera.position.set(0.05, 2.05, 2.95);
-    this.camera.lookAt(this._lookAt.x, this._lookAt.y - 0.05, this._lookAt.z);
+    this.controls.target.copy(this._lookAt);
+    this.controls.target.y -= 0.05;
+    // Behind and to the right of the fly (not top-down).
+    this.camera.position.set(1.85, 1.95, 3.35);
+    this.controls.update();
   }
 
   private onResize = (): void => {
@@ -157,6 +172,7 @@ export class ArcadeScene {
     const elapsed = this.clock.getElapsedTime();
     this.ring.draw(performance.now());
     this.cabinet.updateTexture();
+    this.cabinet.setButtonStates(this.ring.getAButtonStates(performance.now()));
     this.syncFlyContacts();
 
     let aimWorld: THREE.Vector3 | null = null;
@@ -165,6 +181,7 @@ export class ArcadeScene {
       aimWorld = this.cabinet.sensorWorldPos(xy.x, xy.y, this._aimWorld);
     }
     this.fly.update(this.pose, elapsed, aimWorld);
+    this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
 }

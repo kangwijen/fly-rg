@@ -208,18 +208,28 @@ class Judge:
                 path = note.slide.path
                 nxt = min(self.slide_next[i], len(path) - 1)
                 progress = self.slide_next[i] / max(len(path), 1)
-                active.append(
-                    {
-                        "t": note.t,
-                        "button": note.button,
-                        "sensor": path[nxt],
-                        "progress": float(progress),
-                        "type": note.type,
-                    }
-                )
+                active.append(self._note_payload(note, path[nxt], float(progress)))
                 continue
 
             tth = note.t - now
+            # Holds stay visible until release end.
+            if note.type in ("hold", "touch_hold") and note.end is not None:
+                if now > note.end + GOOD:
+                    continue
+                if now < note.t - look_ahead_s:
+                    continue
+                if now < note.t:
+                    progress = (
+                        0.0
+                        if look_ahead_s <= 0
+                        else max(0.0, min(1.0, 1.0 - (note.t - now) / look_ahead_s))
+                    )
+                else:
+                    span = max(note.end - note.t, 1e-6)
+                    progress = max(0.0, min(1.0, (now - note.t) / span))
+                active.append(self._note_payload(note, note.sensor, progress))
+                continue
+
             if tth < -GOOD or tth > look_ahead_s:
                 continue
             if look_ahead_s <= 0:
@@ -227,15 +237,31 @@ class Judge:
             else:
                 progress = max(0.0, min(1.0, 1.0 - tth / look_ahead_s))
             active.append(
-                {
-                    "t": note.t,
-                    "button": note.button,
-                    "sensor": self._current_sensor(note, i),
-                    "progress": progress,
-                    "type": note.type,
-                }
+                self._note_payload(note, self._current_sensor(note, i), progress)
             )
         return active
+
+    def _note_payload(self, note: Note, sensor: str, progress: float) -> dict:
+        row: dict = {
+            "t": note.t,
+            "button": note.button,
+            "sensor": sensor,
+            "progress": float(progress),
+            "type": note.type,
+            "is_break": note.is_break,
+            "is_ex": note.is_ex,
+            "is_mine": note.is_mine,
+            "is_hanabi": note.is_hanabi,
+            "is_star": note.is_star,
+            "is_each": note.is_each,
+            "head_style": note.head_style,
+        }
+        if note.end is not None:
+            row["end"] = note.end
+        if note.slide is not None:
+            row["path"] = list(note.slide.path)
+            row["slide"] = note.slide.to_dict()
+        return row
 
     def active_sensors(self, now: float, look_ahead_s: float) -> list[str]:
         """Distinct sensors currently targeted (next slide node or note sensor)."""

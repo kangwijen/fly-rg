@@ -80,9 +80,16 @@ Files may sit in a subfolder. Required names (case-insensitive):
 
 ## Chart support
 
-Subset Simai: taps/holds 1-8, touch A/B/C/D/E, basic slides (`- > < ^ v V`). Wifi / exotic slides are skipped with a warning. DX sensor grid uses Majdata angles.
+Full Simai ([notation reference](https://w.atwiki.jp/simai/pages/1003.html) / [MajSimai](https://github.com/TeamMajdata/MajSimai)):
 
-Optional offline JSON export: `tools/majsimai_export` (same timed-note schema).
+- BPM `(n)`, beat divisor `{n}` / absolute `{#sec}`
+- TAP / BREAK / EX / mine / star (`$` `$$`) / EACH (`/` and compact `12`)
+- HOLD / BREAK HOLD / EX HOLD (including short `1h`)
+- TOUCH / TOUCH HOLD / hanabi (`f`) on A–E
+- Slides: `- > < ^ v V p q s z pp qq w`, chained, multi (`*`), wifi, `@` `?` `!` heads
+- Duration forms `[n:m]`, `[#sec]`, `[bpm#…]`, `[t##…]`
+
+Optional offline JSON export: `tools/majsimai_export` (timed-note schema).
 
 ## Credits
 

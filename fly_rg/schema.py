@@ -8,13 +8,16 @@ from typing import Literal, TypedDict
 from fly_rg.sensors import button_to_sensor, format_sensor, parse_sensor
 
 NoteType = Literal["tap", "hold", "touch", "touch_hold", "slide"]
+HeadStyle = Literal["normal", "star", "tap", "fade", "sudden"]
 
 
-class SlideDict(TypedDict):
+class SlideDict(TypedDict, total=False):
     shape: str
     end_sensor: str
     path: list[str]
     end_t: float
+    wait_t: float
+    mid: int | None
 
 
 class NoteDict(TypedDict, total=False):
@@ -24,6 +27,13 @@ class NoteDict(TypedDict, total=False):
     button: int | None
     end: float | None
     slide: SlideDict | None
+    is_break: bool
+    is_ex: bool
+    is_mine: bool
+    is_hanabi: bool
+    is_star: bool
+    is_each: bool
+    head_style: HeadStyle
 
 
 class ChartDict(TypedDict):
@@ -35,29 +45,38 @@ class ChartDict(TypedDict):
 
 @dataclass(frozen=True)
 class SlideInfo:
-    """Slide body: shape, expanded sensor path, and arrival time."""
+    """Slide body: shape, expanded sensor path, wait/arrival times."""
 
     shape: str
     end_sensor: str
     path: tuple[str, ...]
     end_t: float
+    wait_t: float = 0.0
+    mid: int | None = None
 
     def to_dict(self) -> SlideDict:
-        return {
+        out: SlideDict = {
             "shape": self.shape,
             "end_sensor": self.end_sensor,
             "path": list(self.path),
             "end_t": float(self.end_t),
+            "wait_t": float(self.wait_t),
         }
+        if self.mid is not None:
+            out["mid"] = int(self.mid)
+        return out
 
     @classmethod
     def from_dict(cls, data: SlideDict | dict) -> SlideInfo:
         path = data.get("path") or []
+        mid_raw = data.get("mid")
         return cls(
             shape=str(data["shape"]),
             end_sensor=str(data["end_sensor"]),
             path=tuple(str(s) for s in path),
             end_t=float(data["end_t"]),
+            wait_t=float(data.get("wait_t", data.get("t", 0.0) or 0.0)),
+            mid=None if mid_raw is None else int(mid_raw),
         )
 
 
@@ -78,6 +97,13 @@ class Note:
     end: float | None = None
     sensor: str = ""
     slide: SlideInfo | None = None
+    is_break: bool = False
+    is_ex: bool = False
+    is_mine: bool = False
+    is_hanabi: bool = False
+    is_star: bool = False
+    is_each: bool = False
+    head_style: HeadStyle = "normal"
 
     def __post_init__(self) -> None:
         sensor = self.sensor.strip() if self.sensor else ""
@@ -88,7 +114,6 @@ class Note:
             sensor = button_to_sensor(int(button))
             object.__setattr__(self, "sensor", sensor)
         else:
-            # Canonicalize (e.g. c1 -> C).
             area, idx = parse_sensor(sensor)
             sensor = format_sensor(area, idx)
             object.__setattr__(self, "sensor", sensor)
@@ -96,15 +121,21 @@ class Note:
                 object.__setattr__(self, "button", _button_from_sensor(sensor))
 
     def to_dict(self) -> NoteDict:
-        out: NoteDict = {
+        return {
             "t": float(self.t),
             "type": self.type,
             "sensor": self.sensor,
             "button": None if self.button is None else int(self.button),
             "end": None if self.end is None else float(self.end),
             "slide": None if self.slide is None else self.slide.to_dict(),
+            "is_break": bool(self.is_break),
+            "is_ex": bool(self.is_ex),
+            "is_mine": bool(self.is_mine),
+            "is_hanabi": bool(self.is_hanabi),
+            "is_star": bool(self.is_star),
+            "is_each": bool(self.is_each),
+            "head_style": self.head_style,
         }
-        return out
 
 
 @dataclass
@@ -132,6 +163,9 @@ class Chart:
             slide = None if slide_raw is None else SlideInfo.from_dict(slide_raw)
             button_raw = raw.get("button")
             sensor_raw = raw.get("sensor")
+            head = str(raw.get("head_style") or "normal")
+            if head not in ("normal", "star", "tap", "fade", "sudden"):
+                head = "normal"
             notes.append(
                 Note(
                     t=float(raw["t"]),
@@ -140,6 +174,13 @@ class Chart:
                     end=None if raw.get("end") is None else float(raw["end"]),
                     sensor="" if sensor_raw is None else str(sensor_raw),
                     slide=slide,
+                    is_break=bool(raw.get("is_break", False)),
+                    is_ex=bool(raw.get("is_ex", False)),
+                    is_mine=bool(raw.get("is_mine", False)),
+                    is_hanabi=bool(raw.get("is_hanabi", False)),
+                    is_star=bool(raw.get("is_star", False)),
+                    is_each=bool(raw.get("is_each", False)),
+                    head_style=head,  # type: ignore[arg-type]
                 )
             )
         notes.sort(key=lambda n: (n.t, n.sensor, n.button or 0))

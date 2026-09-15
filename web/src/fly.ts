@@ -2,13 +2,13 @@ import * as THREE from "three";
 import type { Pose } from "./protocol";
 import { buttonToSensor, sensorXY } from "./sensors";
 
-const LEG_LEN = 0.28;
-const PRESS_DEPTH = 0.028;
+const LEG_LEN = 0.16;
+const PRESS_DEPTH = 0.022;
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 /**
- * Low-poly fly between camera and cabinet, head toward the screen glass.
- * Both foreleg tips stay on the screen plane; strike presses the active tip inward.
+ * Drosophila-style fruit fly: head toward the cabinet glass, six legs,
+ * large red eyes, translucent wings. Foreleg tips stay on the screen plane.
  */
 export class FruitFly {
   readonly group = new THREE.Group();
@@ -19,8 +19,8 @@ export class FruitFly {
   private midHind: THREE.Mesh[] = [];
   private foreLeft: THREE.Mesh;
   private foreRight: THREE.Mesh;
-  private leftHip = new THREE.Vector3(-0.1, 0.16, 0.2);
-  private rightHip = new THREE.Vector3(0.1, 0.16, 0.2);
+  private leftHip = new THREE.Vector3(-0.045, 0.04, 0.055);
+  private rightHip = new THREE.Vector3(0.045, 0.04, 0.055);
   private leftContact = new THREE.Vector3();
   private rightContact = new THREE.Vector3();
   private hasContacts = false;
@@ -34,81 +34,115 @@ export class FruitFly {
 
   constructor() {
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x2a2418,
+      color: 0x3a2a18,
+      roughness: 0.7,
+      metalness: 0.04,
+    });
+    const stripeMat = new THREE.MeshStandardMaterial({
+      color: 0x1c140c,
       roughness: 0.65,
-      metalness: 0.05,
     });
     const thoraxMat = new THREE.MeshStandardMaterial({
-      color: 0x3a3224,
+      color: 0x4a3824,
       roughness: 0.55,
-      metalness: 0.08,
+      metalness: 0.06,
     });
     const wingMat = new THREE.MeshStandardMaterial({
-      color: 0xa8d8e8,
+      color: 0xc5e4f0,
       transparent: true,
-      opacity: 0.45,
-      roughness: 0.3,
+      opacity: 0.38,
+      roughness: 0.2,
       metalness: 0.05,
       side: THREE.DoubleSide,
     });
     const eyeMat = new THREE.MeshStandardMaterial({
-      color: 0xc04030,
-      emissive: 0x401010,
-      emissiveIntensity: 0.4,
-      roughness: 0.35,
+      color: 0xc02820,
+      emissive: 0x501010,
+      emissiveIntensity: 0.45,
+      roughness: 0.3,
     });
     const legMat = new THREE.MeshStandardMaterial({
-      color: 0x1a1610,
-      roughness: 0.7,
+      color: 0x1a1410,
+      roughness: 0.75,
+    });
+    const headMat = new THREE.MeshStandardMaterial({
+      color: 0x2e2418,
+      roughness: 0.55,
     });
 
     this.body = new THREE.Group();
     this.group.add(this.body);
 
-    const abdomen = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 10), bodyMat);
-    abdomen.scale.set(1.1, 0.85, 1.6);
-    abdomen.position.set(0, 0.22, -0.08);
+    const abdomen = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.055, 0.16, 6, 12),
+      bodyMat,
+    );
+    abdomen.rotation.x = Math.PI / 2;
+    abdomen.position.set(0, 0.07, -0.1);
     this.body.add(abdomen);
 
-    const thorax = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), thoraxMat);
-    thorax.scale.set(1.05, 0.9, 1.15);
-    thorax.position.set(0, 0.26, 0.12);
+    for (let i = 0; i < 4; i++) {
+      const band = new THREE.Mesh(
+        new THREE.TorusGeometry(0.056, 0.006, 6, 16),
+        stripeMat,
+      );
+      band.position.set(0, 0.07, -0.04 - i * 0.035);
+      this.body.add(band);
+    }
+
+    const thorax = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 14, 12),
+      thoraxMat,
+    );
+    thorax.scale.set(1.05, 0.85, 1.15);
+    thorax.position.set(0, 0.085, 0.04);
     this.body.add(thorax);
 
-    this.head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 10), thoraxMat);
-    this.head.position.set(0, 0.28, 0.28);
+    this.head = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 10), headMat);
+    this.head.position.set(0, 0.08, 0.125);
     this.body.add(this.head);
 
-    const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), eyeMat);
-    leftEye.position.set(-0.07, 0.02, 0.06);
+    const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), eyeMat);
+    leftEye.scale.set(0.85, 1.05, 0.9);
+    leftEye.position.set(-0.038, 0.008, 0.018);
     this.head.add(leftEye);
     const rightEye = leftEye.clone();
-    rightEye.position.x = 0.07;
+    rightEye.position.x = 0.038;
     this.head.add(rightEye);
 
-    this.leftWing = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.14), wingMat);
-    this.leftWing.position.set(-0.12, 0.34, 0.05);
-    this.leftWing.rotation.z = 0.35;
+    const antGeo = new THREE.CylinderGeometry(0.003, 0.002, 0.045, 5);
+    const antL = new THREE.Mesh(antGeo, legMat);
+    antL.position.set(-0.02, 0.04, 0.03);
+    antL.rotation.z = 0.45;
+    antL.rotation.x = -0.6;
+    this.head.add(antL);
+    const antR = antL.clone();
+    antR.position.x = 0.02;
+    antR.rotation.z = -0.45;
+    this.head.add(antR);
+
+    this.leftWing = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.09), wingMat);
+    this.leftWing.position.set(-0.08, 0.12, 0.0);
+    this.leftWing.rotation.set(-0.35, 0.15, 0.55);
     this.body.add(this.leftWing);
 
-    this.rightWing = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.14), wingMat);
-    this.rightWing.position.set(0.12, 0.34, 0.05);
-    this.rightWing.rotation.z = -0.35;
+    this.rightWing = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.09), wingMat);
+    this.rightWing.position.set(0.08, 0.12, 0.0);
+    this.rightWing.rotation.set(-0.35, -0.15, -0.55);
     this.body.add(this.rightWing);
 
-    const legGeo = new THREE.CylinderGeometry(0.012, 0.01, LEG_LEN, 5);
-    const rearOffsets: Array<[number, number, number]> = [
-      [-0.13, 0.1, 0.02],
-      [0.13, 0.1, 0.02],
-      [-0.1, 0.1, -0.14],
-      [0.1, 0.1, -0.14],
+    const legGeo = new THREE.CylinderGeometry(0.006, 0.004, LEG_LEN, 5);
+    const rearOffsets: Array<[number, number, number, number, number]> = [
+      [-0.05, 0.03, 0.02, 0.7, 0.15],
+      [0.05, 0.03, 0.02, -0.7, 0.15],
+      [-0.04, 0.03, -0.08, 0.65, 0.55],
+      [0.04, 0.03, -0.08, -0.65, 0.55],
     ];
-
-    for (const [x, y, z] of rearOffsets) {
+    for (const [x, y, z, rotZ, rotX] of rearOffsets) {
       const leg = new THREE.Mesh(legGeo, legMat);
       leg.position.set(x, y, z);
-      leg.rotation.z = x < 0 ? 0.55 : -0.55;
-      leg.rotation.x = z < 0 ? 0.4 : 0.1;
+      leg.rotation.z = rotZ;
+      leg.rotation.x = rotX;
       this.body.add(leg);
       this.midHind.push(leg);
     }
@@ -118,14 +152,13 @@ export class FruitFly {
     this.body.add(this.foreLeft);
     this.body.add(this.foreRight);
 
-    // Head at +local Z; yaw PI so head faces the cabinet screen (-world Z).
-    this.group.scale.setScalar(1.25);
-    this.group.rotation.set(0.18, Math.PI, 0);
-    this.baseY = 1.52;
-    this.group.position.set(0, this.baseY, 1.18);
+    // Head at +local Z; yaw PI so the fly faces the cabinet (-world Z).
+    this.group.scale.setScalar(1.15);
+    this.group.rotation.set(0.08, Math.PI + 0.18, 0);
+    this.baseY = 1.58;
+    this.group.position.set(-0.42, this.baseY, 1.45);
   }
 
-  /** Idle / resting tip targets on the glass (world space). */
   setContactTargets(leftWorld: THREE.Vector3, rightWorld: THREE.Vector3): void {
     this.leftContact.copy(leftWorld);
     this.rightContact.copy(rightWorld);
@@ -150,18 +183,18 @@ export class FruitFly {
     const aim = Math.max(-1, Math.min(1, pose.aim));
     const strike = Math.max(0, Math.min(1, pose.strike));
 
-    this.body.rotation.y = aim * 0.22;
-    this.head.rotation.y = aim * 0.18;
-    this.head.rotation.x = -0.12 - strike * 0.1;
+    this.body.rotation.y = aim * 0.18;
+    this.head.rotation.y = aim * 0.16;
+    this.head.rotation.x = -0.08 - strike * 0.08;
 
-    const buzz = Math.sin(elapsed * 55) * 0.45;
-    this.leftWing.rotation.y = -0.2 + buzz;
-    this.rightWing.rotation.y = 0.2 - buzz;
-    this.leftWing.rotation.x = 0.15 + Math.sin(elapsed * 48) * 0.12;
-    this.rightWing.rotation.x = 0.15 + Math.cos(elapsed * 48) * 0.12;
+    const buzz = Math.sin(elapsed * 52) * 0.35;
+    this.leftWing.rotation.y = 0.15 + buzz;
+    this.rightWing.rotation.y = -0.15 - buzz;
+    this.leftWing.rotation.x = -0.35 + Math.sin(elapsed * 46) * 0.1;
+    this.rightWing.rotation.x = -0.35 + Math.cos(elapsed * 46) * 0.1;
 
-    this.group.position.y = this.baseY + Math.sin(elapsed * 3.2) * 0.006;
-    this.group.position.x = aim * 0.04;
+    this.group.position.y = this.baseY + Math.sin(elapsed * 3.2) * 0.004;
+    this.group.position.x = -0.42 + aim * 0.03;
 
     if (!this.hasContacts) return;
 
@@ -170,7 +203,6 @@ export class FruitFly {
     this._leftTip.copy(this.leftContact);
     this._rightTip.copy(this.rightContact);
 
-    // After yaw PI (facing cabinet), pick the nearer tip rather than raw screen X.
     const pressLeft = aimWorld
       ? this.leftContact.distanceToSquared(aimWorld) <=
         this.rightContact.distanceToSquared(aimWorld)
@@ -197,7 +229,7 @@ export class FruitFly {
     this._mid.copy(tipWorld);
     this.body.worldToLocal(this._mid);
     this._dir.copy(this._mid).sub(hipLocal);
-    const len = Math.max(0.08, this._dir.length());
+    const len = Math.max(0.06, this._dir.length());
     this._dir.multiplyScalar(1 / len);
     this._mid.copy(hipLocal).addScaledVector(this._dir, len * 0.5);
     leg.position.copy(this._mid);

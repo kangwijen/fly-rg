@@ -14,25 +14,42 @@ export interface SlideInfo {
   end_sensor?: string;
   path?: string[];
   end_t?: number;
+  wait_t?: number;
+  mid?: number | null;
 }
 
 export interface ChartNote {
   t: number;
-  button: number;
+  button: number | null;
   type: string;
   end?: number | null;
   sensor?: string;
   slide?: SlideInfo | null;
+  is_break?: boolean;
+  is_ex?: boolean;
+  is_mine?: boolean;
+  is_hanabi?: boolean;
+  is_star?: boolean;
+  is_each?: boolean;
+  head_style?: string;
 }
 
 export interface ActiveNote {
   t: number;
-  button: number;
+  button: number | null;
   progress: number;
   sensor?: string;
   type?: string;
+  end?: number | null;
   path?: string[];
   slide?: SlideInfo | null;
+  is_break?: boolean;
+  is_ex?: boolean;
+  is_mine?: boolean;
+  is_hanabi?: boolean;
+  is_star?: boolean;
+  is_each?: boolean;
+  head_style?: string;
 }
 
 export interface Drive {

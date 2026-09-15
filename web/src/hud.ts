@@ -53,7 +53,7 @@ export class Hud {
         <div class="hud-brand">fly-rg</div>
         <div class="hud-title" data-title>Upload a chart zip</div>
         <div class="hud-artist" data-artist></div>
-        <div class="hud-hint" data-hint>Majdata pack: maidata.txt + track.ogg/mp3 + bg.png/jpg (+ pv.mp4)</div>
+        <div class="hud-hint" data-hint>Majdata pack: maidata.txt + track.ogg/mp3 + bg.png/jpg (+ pv.mp4). Drag to orbit.</div>
         <div class="hud-upload">
           <label class="upload-btn">
             Choose zip
@@ -169,7 +169,8 @@ export class Hud {
     this.statusEl.dataset.state = state;
     this.statusEl.textContent = state;
     if (state === "open") {
-      this.hintEl.textContent = "connected · upload a Majdata zip to play";
+      this.hintEl.textContent =
+        "connected · upload a Majdata zip · drag canvas to orbit";
     } else if (state === "closed" || state === "error") {
       this.hintEl.textContent =
         "Server offline. Run: python -m fly_rg.play --mock";

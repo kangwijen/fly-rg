@@ -41,7 +41,7 @@ function boot(): void {
 
   const applyBackground = (): void => {
     if (!ring.setBackground) return;
-    if (media.video.src && media.video.readyState >= 2) {
+    if (media.hasVideoFrame) {
       ring.setBackground(media.video);
     } else if (bgImage && bgImage.complete) {
       ring.setBackground(bgImage);
@@ -57,7 +57,7 @@ function boot(): void {
       case "ready":
         hud.setReady(msg.message || "ready · upload a Majdata zip");
         playing = false;
-        media.stop();
+        media.pauseAtEnd();
         break;
       case "levels":
         hud.setLevels(msg.levels);
@@ -66,7 +66,7 @@ function boot(): void {
       case "error":
         hud.setError(msg.message);
         playing = false;
-        media.stop();
+        media.pauseAtEnd();
         break;
       case "brain_layout":
         brain.setLayout(msg);
@@ -76,7 +76,6 @@ function boot(): void {
       case "chart":
         hud.setChart(msg.title, msg.artist);
         playing = true;
-        void media.start();
         applyBackground();
         break;
       case "state": {
@@ -120,7 +119,7 @@ function boot(): void {
       case "end":
         hud.setScore(msg.score);
         playing = false;
-        media.stop();
+        media.pauseAtEnd();
         hud.setPackHint("finished · upload another zip or Play again");
         break;
       default: {
@@ -174,6 +173,8 @@ function boot(): void {
       hud.setError("upload a zip first");
       return;
     }
+    // Start media inside the click gesture so browsers allow audio.
+    void media.start().then(() => applyBackground());
     if (
       !socket.send({
         type: "load_chart",
@@ -181,6 +182,7 @@ function boot(): void {
         difficulty,
       })
     ) {
+      media.pauseAtEnd();
       hud.setError("not connected to play server");
     }
   });
