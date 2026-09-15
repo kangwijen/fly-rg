@@ -4,12 +4,12 @@ import type { Pose } from "./protocol";
 const FEMUR_LEN = 0.22;
 const TIBIA_LEN = 0.16;
 const REAR_LEN = 0.16;
-const MAX_REACH = 0.55;
 const HOVER_AIR = 0.055;
 const HOVER_TAP = 0;
 const TIP_FOLLOW = 24;
 const ELBOW_MIN = 0.045;
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const OMEGA_ROLL = 0.05;
 
 type ForeLimb = {
   femur: THREE.Mesh;
@@ -36,6 +36,10 @@ export class FruitFly {
   private rightTip = new THREE.Vector3();
   private tipInitialized = false;
   private screenNormal = new THREE.Vector3(0, 0, 1);
+  private leftContact = new THREE.Vector3();
+  private rightContact = new THREE.Vector3();
+  private tipLean = 0;
+  private tipPitch = 0;
   private readonly _dir = new THREE.Vector3();
   private readonly _mid = new THREE.Vector3();
   private readonly _from = new THREE.Vector3();
@@ -45,7 +49,6 @@ export class FruitFly {
   private readonly _ortho = new THREE.Vector3();
   private readonly _leftTarget = new THREE.Vector3();
   private readonly _rightTarget = new THREE.Vector3();
-  private readonly _hipWorld = new THREE.Vector3();
   private lastElapsed = 0;
   private baseY = 0;
 
@@ -174,7 +177,18 @@ export class FruitFly {
     this.group.position.set(0, this.baseY, 1.04);
   }
 
-  setContactTargets(_leftWorld: THREE.Vector3, _rightWorld: THREE.Vector3): void {}
+  setContactTargets(leftWorld: THREE.Vector3, rightWorld: THREE.Vector3): void {
+    this.leftContact.copy(leftWorld);
+    this.rightContact.copy(rightWorld);
+  }
+
+  /** Yaw/pitch the body toward the midpoint of both glass tips. */
+  leanToward(leftWorld: THREE.Vector3, rightWorld: THREE.Vector3): void {
+    const midX = (leftWorld.x + rightWorld.x) * 0.5;
+    const midY = (leftWorld.y + rightWorld.y) * 0.5;
+    this.tipLean = Math.max(-1, Math.min(1, (midX - this.group.position.x) * 2.5));
+    this.tipPitch = Math.max(-1, Math.min(1, (midY - this.baseY) * 1.6));
+  }
 
   setScreenNormal(normalWorld: THREE.Vector3): void {
     this.screenNormal.copy(normalWorld).normalize();
@@ -184,22 +198,25 @@ export class FruitFly {
 
   setAimSensor(_sensor: string | null): void {}
 
-  update(
-    pose: Pose,
-    elapsed: number,
-    leftWorld: THREE.Vector3 | null = null,
-    rightWorld: THREE.Vector3 | null = null,
-  ): void {
+  update(pose: Pose, elapsed: number): void {
     const aim = Math.max(-1, Math.min(1, pose.aim));
     const strike = Math.max(0, Math.min(1, pose.strike));
     const strikeL = Math.max(0, Math.min(1, pose.strike_l ?? strike));
     const strikeR = Math.max(0, Math.min(1, pose.strike_r ?? strike));
+    const omegaL = pose.omega_l ?? 0;
+    const omegaR = pose.omega_r ?? 0;
     const dt = Math.min(0.05, Math.max(0, elapsed - this.lastElapsed));
     this.lastElapsed = elapsed;
     const follow = 1 - Math.exp(-TIP_FOLLOW * dt);
+    const lean = Math.max(-1, Math.min(1, this.tipLean * 0.75 + aim * 0.25));
 
-    this.body.rotation.y = aim * 0.18;
-    this.head.rotation.y = aim * 0.16;
+    this.body.rotation.y = lean * 0.2;
+    this.body.rotation.x = this.tipPitch * 0.06;
+    this.body.rotation.z = Math.max(
+      -0.22,
+      Math.min(0.22, -(omegaL + omegaR) * OMEGA_ROLL),
+    );
+    this.head.rotation.y = lean * 0.16;
     this.head.rotation.x = -0.08 - strike * 0.08;
 
     const buzz = Math.sin(elapsed * 52) * 0.35;
@@ -209,12 +226,12 @@ export class FruitFly {
     this.rightWing.rotation.x = -0.35 + Math.cos(elapsed * 46) * 0.1;
 
     this.group.position.y = this.baseY + Math.sin(elapsed * 3.2) * 0.004;
-    this.group.position.x = aim * 0.02;
+    this.group.position.x = lean * 0.03;
 
     this.group.updateWorldMatrix(true, false);
 
-    this.aimTip(this._leftTarget, this.leftHip, leftWorld, strikeL);
-    this.aimTip(this._rightTarget, this.rightHip, rightWorld, strikeR);
+    this.aimTip(this._leftTarget, this.leftContact, strikeL);
+    this.aimTip(this._rightTarget, this.rightContact, strikeR);
     if (!this.tipInitialized) {
       this.leftTip.copy(this._leftTarget);
       this.rightTip.copy(this._rightTarget);
@@ -242,32 +259,10 @@ export class FruitFly {
     return { femur, tibia, hand };
   }
 
-  private aimTip(
-    out: THREE.Vector3,
-    hipLocal: THREE.Vector3,
-    padWorld: THREE.Vector3 | null,
-    strike: number,
-  ): void {
-    this._hipWorld.copy(hipLocal);
-    this.body.localToWorld(this._hipWorld);
+  private aimTip(out: THREE.Vector3, padWorld: THREE.Vector3, strike: number): void {
     const hover = HOVER_AIR * (1 - strike) + HOVER_TAP * strike;
-    if (padWorld) {
-      out.copy(padWorld);
-      out.addScaledVector(this.screenNormal, hover);
-      return;
-    }
-    this._mid.copy(hipLocal);
-    this._mid.x += hipLocal.x >= 0 ? 0.035 : -0.035;
-    this._mid.y -= 0.055;
-    this._mid.z += 0.06;
-    this.body.localToWorld(this._mid);
-    out.copy(this._mid);
-    this._dir.copy(out).sub(this._hipWorld);
-    const len = this._dir.length();
-    if (len > MAX_REACH && len > 1e-6) {
-      this._dir.multiplyScalar(MAX_REACH / len);
-      out.copy(this._hipWorld).add(this._dir);
-    }
+    out.copy(padWorld);
+    out.addScaledVector(this.screenNormal, hover);
   }
 
   private plantArm(limb: ForeLimb, hipLocal: THREE.Vector3, tipWorld: THREE.Vector3): void {

@@ -7,7 +7,16 @@ from __future__ import annotations
 
 import math
 
-from fly_rg.sensors import RADIUS, note_landing_xy, sensor_xy
+import pytest
+
+from fly_rg.sensors import (
+    RADIUS,
+    nearest_sensor,
+    note_landing_xy,
+    sensor_polar,
+    sensor_xy,
+    wrap_angle,
+)
 
 
 def test_d1_at_top():
@@ -39,3 +48,44 @@ def test_note_landing_a1_at_unit_radius():
 
 def test_note_landing_b1_matches_sensor():
     assert note_landing_xy("B1") == sensor_xy("B1")
+
+
+def test_nearest_sensor_centers():
+    assert nearest_sensor(*sensor_xy("C")) == "C"
+    assert nearest_sensor(*sensor_xy("A1")) == "A1"
+    assert nearest_sensor(*sensor_xy("B3")) == "B3"
+    assert nearest_sensor(*sensor_xy("D1")) == "D1"
+    assert nearest_sensor(*sensor_xy("E5")) == "E5"
+
+
+def test_nearest_sensor_returns_c_not_c1_c2():
+    assert nearest_sensor(0.08, 0.0) == "C"
+    assert nearest_sensor(-0.08, 0.0) == "C"
+    assert nearest_sensor(0.0, 0.0) == "C"
+
+
+def test_nearest_sensor_priority_c_over_b():
+    bx, by = sensor_xy("B1")
+    r = math.hypot(bx, by)
+    x, y = (0.31 / r) * bx, (0.31 / r) * by
+    assert nearest_sensor(x, y) == "C"
+
+
+def test_nearest_sensor_gap_is_none():
+    # D1 angle (12 o'clock), between C and E, off B wedges.
+    assert nearest_sensor(0.0, 0.50) is None
+
+
+def test_sensor_polar_matches_xy():
+    theta, r = sensor_polar("A5")
+    x, y = sensor_xy("A5")
+    assert r == pytest.approx(math.hypot(x, y), abs=1e-9)
+    assert theta == pytest.approx(math.atan2(y, x), abs=1e-9)
+    assert x < 0
+
+
+def test_wrap_angle_range():
+    assert wrap_angle(0.0) == pytest.approx(0.0)
+    assert wrap_angle(math.pi + 0.1) == pytest.approx(-math.pi + 0.1)
+    assert wrap_angle(-math.pi - 0.1) == pytest.approx(math.pi - 0.1)
+    assert wrap_angle(3 * math.pi) == pytest.approx(math.pi, abs=1e-9)

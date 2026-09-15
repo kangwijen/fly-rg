@@ -20,6 +20,9 @@ const S = SIZE / 512;
 const HOLD_INNER_FRAC = 1.225 / 4.8;
 const PAD_BLUE = "#2b6cff";
 const OUTER_STEPS = 10;
+const HAND_TRAIL = 12;
+const HOME_L = sensorXY("A5");
+const HOME_R = sensorXY("A4");
 
 const COLORS = {
   diskInner: "rgba(12, 21, 36, 0.5)",
@@ -38,6 +41,8 @@ const COLORS = {
   textStroke: "rgba(4, 8, 16, 0.92)",
   aim: "#e24f9c",
   active: "#5ad6d0",
+  handL: "#3de0d0",
+  handR: "#e24f9c",
 };
 
 const JUDGMENT_COLORS: Record<Judgment, string> = {
@@ -63,6 +68,12 @@ interface HighlightStyle {
 interface Pt {
   x: number;
   y: number;
+}
+
+interface HandSample {
+  x: number;
+  y: number;
+  strike: number;
 }
 
 type NoteKind = "tap" | "hold" | "touch" | "touch_hold" | "slide";
@@ -128,6 +139,20 @@ function tapTravel(target: Pt, progress: number): { pos: Pt; r: number } {
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+function clamp01(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+function isUnitXY(value: unknown): value is [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 2 &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  );
 }
 
 function holdKey(note: ActiveNote): string {
@@ -250,6 +275,12 @@ export class RingDisplay {
   private bgImage: CanvasImageSource | null = null;
   private holdPrevProgress = new Map<string, number>();
   private holdSustain = new Set<string>();
+  private handL: [number, number] | null = null;
+  private handR: [number, number] | null = null;
+  private handStrikeL = 0;
+  private handStrikeR = 0;
+  private trailL: HandSample[] = [];
+  private trailR: HandSample[] = [];
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -291,6 +322,18 @@ export class RingDisplay {
 
   setSlidePaths(paths: string[][]): void {
     this.slidePaths = paths.map((p) => p.map(normalizeSensor));
+  }
+
+  setHandTips(
+    left?: [number, number] | null,
+    right?: [number, number] | null,
+    strikeL = 0,
+    strikeR = 0,
+  ): void {
+    this.handL = isUnitXY(left) ? left : null;
+    this.handR = isUnitXY(right) ? right : null;
+    this.handStrikeL = clamp01(strikeL);
+    this.handStrikeR = clamp01(strikeR);
   }
 
   flashHit(
@@ -377,6 +420,80 @@ export class RingDisplay {
     for (const note of this.active) {
       this.drawNote(note, nowMs);
     }
+
+    this.recordHandTrail();
+    this.drawHandTips();
+  }
+
+  private resolveHand(
+    xy: [number, number] | null,
+    home: { x: number; y: number },
+  ): { x: number; y: number } {
+    if (xy) return { x: xy[0], y: xy[1] };
+    return home;
+  }
+
+  private recordHandTrail(): void {
+    const left = this.resolveHand(this.handL, HOME_L);
+    const right = this.resolveHand(this.handR, HOME_R);
+    this.trailL.push({ x: left.x, y: left.y, strike: this.handStrikeL });
+    this.trailR.push({ x: right.x, y: right.y, strike: this.handStrikeR });
+    if (this.trailL.length > HAND_TRAIL) this.trailL.shift();
+    if (this.trailR.length > HAND_TRAIL) this.trailR.shift();
+  }
+
+  private drawHandTips(): void {
+    this.drawHandTrail(this.trailL, COLORS.handL);
+    this.drawHandTrail(this.trailR, COLORS.handR);
+    this.drawHandDisc(
+      this.resolveHand(this.handL, HOME_L),
+      this.handStrikeL,
+      COLORS.handL,
+    );
+    this.drawHandDisc(
+      this.resolveHand(this.handR, HOME_R),
+      this.handStrikeR,
+      COLORS.handR,
+    );
+  }
+
+  private drawHandTrail(trail: HandSample[], color: string): void {
+    const { ctx } = this;
+    const n = trail.length;
+    for (let i = 0; i < n; i++) {
+      const sample = trail[i];
+      const u = (i + 1) / n;
+      const p = toCanvas(sample.x, sample.y, CENTER, OUTER_R);
+      const r = (2.2 + 3.4 * u) * S * (0.55 + 0.45 * sample.strike);
+      ctx.save();
+      ctx.globalAlpha = (0.08 + 0.22 * u) * (0.35 + 0.65 * sample.strike);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  private drawHandDisc(
+    unit: { x: number; y: number },
+    strike: number,
+    color: string,
+  ): void {
+    const { ctx } = this;
+    const p = toCanvas(unit.x, unit.y, CENTER, OUTER_R);
+    const r = (6.5 + 7.5 * strike) * S;
+    ctx.save();
+    ctx.globalAlpha = 0.28 + 0.62 * strike;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.2 + 0.7 * strike;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 1.4 * S;
+    ctx.stroke();
+    ctx.restore();
   }
 
   private pruneHoldTracking(): void {

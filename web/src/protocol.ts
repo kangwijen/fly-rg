@@ -71,6 +71,10 @@ export interface Pose {
   strike: number;
   strike_l?: number;
   strike_r?: number;
+  omega_l?: number;
+  omega_r?: number;
+  reach_l?: number;
+  reach_r?: number;
 }
 
 export interface HelloMessage {
@@ -104,6 +108,9 @@ export interface StateMessage {
   tap_sensor?: string | null;
   hand_l_sensor?: string | null;
   hand_r_sensor?: string | null;
+  /** Unit disk, x right, y up, origin C. Tip target; not a pad id. */
+  hand_l?: [number, number] | null;
+  hand_r?: [number, number] | null;
   score: Score;
   active: ActiveNote[];
   active_sensors?: string[];

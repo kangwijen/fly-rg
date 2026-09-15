@@ -8,7 +8,7 @@ import json
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Never
 
 from websockets.asyncio.server import broadcast, serve
 
@@ -27,6 +27,7 @@ from fly_rg.protocol import (
     state_message,
 )
 from fly_rg.schema import Chart
+from fly_rg.sensors import all_sensors, nearest_sensor, sensor_xy
 
 
 @dataclass
@@ -43,6 +44,47 @@ def _error(message: str) -> dict[str, Any]:
 
 def _levels_message(maidata: str) -> dict[str, Any]:
     return {"type": "levels", "levels": list_difficulties(maidata)}
+
+
+def _press_sensor(x: float, y: float) -> str | None:
+    hit = nearest_sensor(x, y)
+    if hit is not None:
+        return hit
+    best: str | None = None
+    best_d = float("inf")
+    for sensor in all_sensors():
+        sx, sy = sensor_xy(sensor)
+        d = (sx - x) * (sx - x) + (sy - y) * (sy - y)
+        if d < best_d:
+            best_d = d
+            best = sensor
+    return best
+
+
+def _contact_sensors(judge: Judge, now: float) -> set[str]:
+    """Pads that should stay planted (hold sustain / in-progress slide)."""
+    out: set[str] = set()
+    for i, note in enumerate(judge.notes):
+        if judge.matched[i]:
+            continue
+        nt = note.type
+        if nt == "hold" or nt == "touch_hold":
+            end = note.end if note.end is not None else note.t
+            if note.t <= now <= end:
+                out.add(note.sensor)
+            continue
+        if nt == "slide":
+            if note.slide is not None and judge.slide_next[i] > 0:
+                if now <= note.slide.end_t:
+                    path = note.slide.path
+                    nxt = min(judge.slide_next[i], len(path) - 1)
+                    out.add(path[nxt])
+            continue
+        if nt == "tap" or nt == "touch":
+            continue
+        _exhaustive: Never = nt
+        raise ValueError(f"unknown note type: {_exhaustive}")
+    return out
 
 
 async def _play_once(
@@ -70,11 +112,20 @@ async def _play_once(
     end_t = last_note_t + max(2.0, extra + 0.5)
 
     judge = Judge(chart.notes)
-    decoder = ActionDecoder(brain if not is_mock else None, mock=is_mock, seed=0)
+    decoder = ActionDecoder(brain, mock=is_mock, seed=0)
     t0 = time.perf_counter()
     sim_t = 0.0
     step_i = 0
     session.stop_event.clear()
+    motor_dt = float(args.dt)
+    brain_dt = motor_dt
+    next_brain_t = 0.0
+    last_state_t = -1e9
+    last_drive: dict[str, float] = {}
+    last_fired: list = []
+    overrun_logged = False
+    step_times: list[float] = []
+    STATE_PERIOD_S = 0.008
 
     emit(chart_message(chart))
     print(
@@ -96,25 +147,44 @@ async def _play_once(
             chart.notes,
             sim_t,
             look_ahead_s=args.look_ahead,
-            dt=args.dt,
+            dt=motor_dt,
             slide_next=judge.slide_next,
+            hand_l=decoder.hand_l,
+            hand_r=decoder.hand_r,
         )
-        if is_mock and isinstance(brain, MockBrain):
-            fired = brain.step(drive=enc.drive)
-            last_drive = brain.last_inject
-        else:
-            fired = brain.step(inject=enc.inject)
-            last_drive = enc.drive
-
-        fired_list = list(fired) if fired is not None else []
-        decoder.observe(fired_list)
+        last_drive = enc.drive
+        if sim_t + 1e-12 >= next_brain_t:
+            t_brain = time.perf_counter()
+            if is_mock and isinstance(brain, MockBrain):
+                fired = brain.step(drive=enc.drive)
+                last_drive = brain.last_inject
+            else:
+                fired = brain.step(inject=enc.inject)
+                last_drive = enc.drive
+            elapsed = time.perf_counter() - t_brain
+            if not is_mock:
+                step_times.append(elapsed)
+                if len(step_times) > 8:
+                    del step_times[0]
+                mean_elapsed = sum(step_times) / len(step_times)
+                if mean_elapsed > motor_dt and not overrun_logged:
+                    print(
+                        "brain step overran dt; falling back to brain dt=0.020 "
+                        "(holding DN rates, motor stays 4ms)",
+                        flush=True,
+                    )
+                    overrun_logged = True
+                    brain_dt = 0.020
+                    brain.dt = 0.020
+            next_brain_t = sim_t + brain_dt
+            last_fired = list(fired) if fired is not None else []
+            decoder.observe(last_fired)
+        fired_list = last_fired
         dec = decoder.decode(
             sim_t,
-            chart.notes,
-            look_ahead_s=args.look_ahead,
+            dt=motor_dt,
             drive=last_drive,
-            last_inject=getattr(brain, "last_inject", None),
-            slide_next=judge.slide_next,
+            contact=_contact_sensors(judge, sim_t),
         )
 
         for miss in judge.auto_miss(sim_t):
@@ -128,51 +198,34 @@ async def _play_once(
                 )
             )
 
-        if dec.tap_l and dec.hand_l_sensor is not None:
-            hit = judge.press(dec.hand_l_sensor, sim_t)
-            if hit is not None:
-                emit(
-                    hit_message(
-                        t=hit.t,
-                        button=hit.button,
-                        sensor=hit.sensor,
-                        judgment=hit.judgment,
-                        timing=hit.timing,
+        if dec.tap_l:
+            press_l = _press_sensor(*dec.hand_l)
+            if press_l is not None:
+                hit = judge.press(press_l, sim_t)
+                if hit is not None:
+                    emit(
+                        hit_message(
+                            t=hit.t,
+                            button=hit.button,
+                            sensor=hit.sensor,
+                            judgment=hit.judgment,
+                            timing=hit.timing,
+                        )
                     )
-                )
-        if (
-            dec.tap_r
-            and dec.hand_r_sensor is not None
-            and dec.hand_r_sensor != (dec.hand_l_sensor if dec.tap_l else None)
-        ):
-            hit = judge.press(dec.hand_r_sensor, sim_t)
-            if hit is not None:
-                emit(
-                    hit_message(
-                        t=hit.t,
-                        button=hit.button,
-                        sensor=hit.sensor,
-                        judgment=hit.judgment,
-                        timing=hit.timing,
+        if dec.tap_r:
+            press_r = _press_sensor(*dec.hand_r)
+            if press_r is not None:
+                hit = judge.press(press_r, sim_t)
+                if hit is not None:
+                    emit(
+                        hit_message(
+                            t=hit.t,
+                            button=hit.button,
+                            sensor=hit.sensor,
+                            judgment=hit.judgment,
+                            timing=hit.timing,
+                        )
                     )
-                )
-        if (
-            dec.tap
-            and dec.tap_sensor is not None
-            and dec.tap_sensor != dec.hand_l_sensor
-            and dec.tap_sensor != dec.hand_r_sensor
-        ):
-            hit = judge.press(dec.tap_sensor, sim_t)
-            if hit is not None:
-                emit(
-                    hit_message(
-                        t=hit.t,
-                        button=hit.button,
-                        sensor=hit.sensor,
-                        judgment=hit.judgment,
-                        timing=hit.timing,
-                    )
-                )
 
         spikes = atlas.spikes_for(
             last_drive,
@@ -185,32 +238,40 @@ async def _play_once(
         )
         step_i += 1
 
-        emit(
-            state_message(
-                t=sim_t,
-                aim_button=dec.aim_button,
-                aim_sensor=dec.aim_sensor,
-                tap=dec.tap,
-                tap_button=dec.tap_button if dec.tap else None,
-                tap_sensor=dec.tap_sensor if dec.tap else None,
-                score=judge.score.to_dict(),
-                active=judge.active_notes(sim_t, args.look_ahead),
-                active_sensors=judge.active_sensors(sim_t, args.look_ahead),
-                drive=enc.drive,
-                pose={
-                    "aim": dec.aim,
-                    "strike": dec.strike,
-                    "strike_l": dec.strike_l,
-                    "strike_r": dec.strike_r,
-                },
-                spikes=spikes,
-                spike_total=len(fired_list) if fired_list else len(spikes),
-                hand_l_sensor=dec.hand_l_sensor,
-                hand_r_sensor=dec.hand_r_sensor,
+        if sim_t + 1e-12 >= last_state_t + STATE_PERIOD_S:
+            last_state_t = sim_t
+            emit(
+                state_message(
+                    t=sim_t,
+                    aim_button=dec.aim_button,
+                    aim_sensor=dec.aim_sensor,
+                    tap=dec.tap,
+                    tap_button=dec.tap_button if dec.tap else None,
+                    tap_sensor=dec.tap_sensor if dec.tap else None,
+                    score=judge.score.to_dict(),
+                    active=judge.active_notes(sim_t, args.look_ahead),
+                    active_sensors=judge.active_sensors(sim_t, args.look_ahead),
+                    drive=enc.drive,
+                    pose={
+                        "aim": dec.aim,
+                        "strike": dec.strike,
+                        "strike_l": dec.strike_l,
+                        "strike_r": dec.strike_r,
+                        "omega_l": dec.omega_l,
+                        "omega_r": dec.omega_r,
+                        "reach_l": dec.reach_l,
+                        "reach_r": dec.reach_r,
+                    },
+                    spikes=spikes,
+                    spike_total=len(fired_list) if fired_list else len(spikes),
+                    hand_l_sensor=dec.hand_l_sensor,
+                    hand_r_sensor=dec.hand_r_sensor,
+                    hand_l=dec.hand_l,
+                    hand_r=dec.hand_r,
+                )
             )
-        )
 
-        sim_t += args.dt
+        sim_t += motor_dt
 
     emit(end_message(judge.score.to_dict()))
     print(
@@ -223,7 +284,8 @@ async def _play_once(
 
 
 async def run_play(args: argparse.Namespace) -> None:
-    brain, is_mock = make_brain(mock=args.mock, device=args.device)
+    args.dt = min(0.005, max(0.001, float(args.dt)))
+    brain, is_mock = make_brain(mock=args.mock, device=args.device, dt=args.dt)
     if args.mock:
         is_mock = True
     print(
@@ -340,12 +402,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--speed", type=float, default=1.0, help="playback speed multiplier")
     p.add_argument("--look-ahead", type=float, default=1.0, dest="look_ahead")
-    p.add_argument("--dt", type=float, default=0.02, help="simulation step seconds")
+    p.add_argument("--dt", type=float, default=0.004, help="motor step seconds (1-5ms)")
     return p
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    args.dt = min(0.005, max(0.001, float(args.dt)))
     try:
         asyncio.run(run_play(args))
     except KeyboardInterrupt:

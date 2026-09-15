@@ -4,7 +4,20 @@ import { Cabinet } from "./cabinet";
 import { FruitFly } from "./fly";
 import type { ActiveNote, Pose } from "./protocol";
 import { RingDisplay } from "./ring";
-import { pathPoint, sensorXY } from "./sensors";
+import { sensorXY } from "./sensors";
+
+/** Idle homes on the unit disk: left A5, right A4. */
+const HOME_L = sensorXY("A5");
+const HOME_R = sensorXY("A4");
+
+function isUnitXY(value: unknown): value is [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 2 &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  );
+}
 
 export class ArcadeScene {
   readonly ring = new RingDisplay();
@@ -20,15 +33,12 @@ export class ArcadeScene {
   private running = false;
   private viewport: HTMLElement;
   private resizeObserver: ResizeObserver;
-  private activeNotes: ActiveNote[] = [];
-  private handL: string | null = null;
-  private handR: string | null = null;
+  private handLXY: [number, number] | null = null;
+  private handRXY: [number, number] | null = null;
   private readonly _leftAim = new THREE.Vector3();
   private readonly _rightAim = new THREE.Vector3();
   private readonly _normal = new THREE.Vector3();
   private readonly _lookAt = new THREE.Vector3();
-  private readonly _leftIdle = new THREE.Vector3();
-  private readonly _rightIdle = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement, viewport: HTMLElement) {
     this.viewport = viewport;
@@ -114,13 +124,14 @@ export class ArcadeScene {
     this.pose = pose;
   }
 
-  setActiveNotes(notes: ActiveNote[]): void {
-    this.activeNotes = notes;
-  }
+  setActiveNotes(_notes: ActiveNote[]): void {}
 
-  setHandSensors(left: string | null, right: string | null): void {
-    this.handL = left;
-    this.handR = right;
+  setHands(
+    left?: [number, number] | null,
+    right?: [number, number] | null,
+  ): void {
+    this.handLXY = isUnitXY(left) ? left : null;
+    this.handRXY = isUnitXY(right) ? right : null;
   }
 
   setAimSensor(sensor: string | null): void {
@@ -150,38 +161,23 @@ export class ArcadeScene {
     this.renderer.dispose();
   }
 
+  private handUnit(
+    xy: [number, number] | null,
+    home: { x: number; y: number },
+  ): { x: number; y: number } {
+    if (xy) return { x: xy[0], y: xy[1] };
+    return home;
+  }
+
   private syncFlyContacts(): void {
-    const left = sensorXY("A4");
-    const right = sensorXY("A5");
-    this.cabinet.sensorWorldPos(left.x, left.y, this._leftIdle);
-    this.cabinet.sensorWorldPos(right.x, right.y, this._rightIdle);
+    const left = this.handUnit(this.handLXY, HOME_L);
+    const right = this.handUnit(this.handRXY, HOME_R);
+    this.cabinet.sensorWorldPos(left.x, left.y, this._leftAim);
+    this.cabinet.sensorWorldPos(right.x, right.y, this._rightAim);
     this.cabinet.screenNormalWorld(this._normal);
-    this.fly.setContactTargets(this._leftIdle, this._rightIdle);
+    this.fly.setContactTargets(this._leftAim, this._rightAim);
     this.fly.setScreenNormal(this._normal);
-  }
-
-  /** Pad targets, or null so the fly tucks that hand. */
-  private tipPair(): {
-    left: { x: number; y: number } | null;
-    right: { x: number; y: number } | null;
-  } {
-    return {
-      left: this.handContact(this.handL),
-      right: this.handContact(this.handR),
-    };
-  }
-
-  private handContact(sensor: string | null): { x: number; y: number } | null {
-    if (!sensor) return null;
-    const slide = this.activeNotes.find(
-      (n) =>
-        n.type === "slide" &&
-        n.path != null &&
-        n.path.length > 1 &&
-        n.sensor === sensor,
-    );
-    if (slide) return slideTipXY(slide);
-    return sensorXY(sensor);
+    this.fly.leanToward(this._leftAim, this._rightAim);
   }
 
   /** Default 3/4 view from behind-right, looking over the fly at the playfield. */
@@ -208,30 +204,8 @@ export class ArcadeScene {
     this.cabinet.updateTexture();
     this.cabinet.setButtonStates(this.ring.getAButtonStates(performance.now()));
     this.syncFlyContacts();
-
-    const pair = this.tipPair();
-    const leftAim = pair.left
-      ? this.cabinet.sensorWorldPos(pair.left.x, pair.left.y, this._leftAim)
-      : null;
-    const rightAim = pair.right
-      ? this.cabinet.sensorWorldPos(pair.right.x, pair.right.y, this._rightAim)
-      : null;
-    this.fly.update(this.pose, elapsed, leftAim, rightAim);
+    this.fly.update(this.pose, elapsed);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
-}
-
-function slideTipXY(note: ActiveNote): { x: number; y: number } {
-  const path = note.path;
-  if (!path || path.length < 2) {
-    return sensorXY(note.sensor ?? path?.[0] ?? "C");
-  }
-  const raw = Math.min(1, Math.max(0, note.progress));
-  if (raw < 0.5) {
-    const head = sensorXY(path[0]);
-    const u = raw / 0.5;
-    return { x: head.x * u, y: head.y * u };
-  }
-  return pathPoint(path, (raw - 0.5) / 0.5);
 }

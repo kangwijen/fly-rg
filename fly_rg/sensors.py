@@ -130,3 +130,88 @@ def all_sensors() -> list[str]:
         for i in range(1, 9):
             out.append(f"{area}{i}")
     return out
+
+
+def wrap_angle(a: float) -> float:
+    """Wrap radians to (-pi, pi]."""
+    tau = 2.0 * math.pi
+    out = (a + math.pi) % tau - math.pi
+    if out <= -math.pi:
+        return math.pi
+    return out
+
+
+def xy_to_polar(x: float, y: float) -> tuple[float, float]:
+    return math.atan2(y, x), math.hypot(x, y)
+
+
+def polar_to_xy(theta: float, r: float) -> tuple[float, float]:
+    return r * math.cos(theta), r * math.sin(theta)
+
+
+def sensor_polar(sensor: str) -> tuple[float, float]:
+    x, y = sensor_xy(sensor)
+    return xy_to_polar(x, y)
+
+
+def _in_regular_octagon(
+    x: float, y: float, cx: float, cy: float, circum_r: float, rotation: float
+) -> bool:
+    dx = x - cx
+    dy = y - cy
+    c = math.cos(rotation)
+    s = math.sin(rotation)
+    lx = dx * c + dy * s
+    ly = -dx * s + dy * c
+    half = circum_r * math.cos(math.pi / 8.0)
+    return (
+        abs(lx) <= half
+        and abs(ly) <= half
+        and abs(lx) + abs(ly) <= half * math.sqrt(2.0)
+    )
+
+
+def _in_wedge(
+    x: float, y: float, mid: float, half: float, inner: float, outer: float
+) -> bool:
+    r = math.hypot(x, y)
+    if r < inner or r > outer:
+        return False
+    return abs(wrap_angle(math.atan2(y, x) - mid)) <= half
+
+
+def _in_e_diamond(x: float, y: float, index: int) -> bool:
+    mid = sensor_angle_rad("E", index)
+    c = math.cos(mid)
+    s = math.sin(mid)
+    radial = x * c + y * s - RADIUS["E"]
+    tangent = -x * s + y * c
+    er = PAD["eRadial"]
+    et = PAD["eTangent"]
+    if er <= 0 or et <= 0:
+        return False
+    return abs(radial) / er + abs(tangent) / et <= 1.0
+
+
+def nearest_sensor(x: float, y: float) -> str | None:
+    """Occupancy label (C>B>E>A>D). Gaps return None. C not C1/C2."""
+    if _in_regular_octagon(x, y, 0.0, 0.0, PAD["cR"], 0.0):
+        return "C"
+    for i in range(1, 9):
+        mid = sensor_angle_rad("B", i)
+        cx = RADIUS["B"] * math.cos(mid)
+        cy = RADIUS["B"] * math.sin(mid)
+        if _in_regular_octagon(x, y, cx, cy, PAD["bOct"], mid):
+            return f"B{i}"
+    for i in range(1, 9):
+        if _in_e_diamond(x, y, i):
+            return f"E{i}"
+    for i in range(1, 9):
+        mid = sensor_angle_rad("A", i)
+        if _in_wedge(x, y, mid, PAD["adHalf"], PAD["adInner"], PAD["adOuter"]):
+            return f"A{i}"
+    for i in range(1, 9):
+        mid = sensor_angle_rad("D", i)
+        if _in_wedge(x, y, mid, PAD["dHalf"], PAD["dInner"], PAD["dOuter"]):
+            return f"D{i}"
+    return None

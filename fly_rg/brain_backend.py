@@ -5,10 +5,17 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from fly_rg.decoder import STEER_TYPES, TAP_TYPES
-from fly_rg.encoder import CHASE_TYPES, DRIVE_KEYS, LOOM_TYPES, THREAT_TYPES
+from fly_rg.encoder import CHASE_TYPES, DRIVE_KEYS, LOOM_TYPES, STEER_KEYS, THREAT_TYPES
+
+try:
+    from flybrain import FlyBrain as _FlyBrain
+except ImportError:
+    _FlyBrain = None
 
 
 class BrainBackend(Protocol):
+    dt: float
+
     def cells(self, types: list[str], side: str) -> Any: ...
 
     def step(self, inject: list | None = None) -> Any: ...
@@ -17,11 +24,21 @@ class BrainBackend(Protocol):
 class RealBrain:
     """Thin wrapper around flybrain.FlyBrain."""
 
-    def __init__(self, device: str = "auto"):
-        from flybrain import FlyBrain
+    def __init__(self, device: str = "auto", dt: float = 0.004):
+        if _FlyBrain is None:
+            raise ImportError("flybrain is not installed")
+        self._brain = _FlyBrain(device=device, dt=dt)
+        self._dt = float(dt)
 
-        self._brain = FlyBrain(device=device)
-        self.dt = float(getattr(self._brain, "dt", 0.02))
+    @property
+    def dt(self) -> float:
+        return self._dt
+
+    @dt.setter
+    def dt(self, value: float) -> None:
+        self._dt = float(value)
+        if hasattr(self._brain, "dt"):
+            self._brain.dt = self._dt
 
     def cells(self, types: list[str], side: str) -> Any:
         return self._brain.cells(types, side=side)
@@ -37,14 +54,13 @@ class MockBrain:
     are synthetic integers keyed by (type, side).
     """
 
-    def __init__(self, seed: int = 0):
-        self.dt = 0.02
+    def __init__(self, seed: int = 0, dt: float = 0.004):
+        self.dt = float(dt)
         self.seed = seed
         self.last_inject: dict[str, float] = {}
         self._step_i = 0
         self._cell_ids: dict[tuple[str, str], list[int]] = {}
         self._next_id = 1
-        # Pre-register readout / inject populations used by encoder/decoder.
         for side in ("L", "R"):
             for t in (*LOOM_TYPES, *THREAT_TYPES, *CHASE_TYPES, *STEER_TYPES, *TAP_TYPES):
                 self.cells([t], side)
@@ -55,7 +71,6 @@ class MockBrain:
         for t in types:
             key = (t, side_u)
             if key not in self._cell_ids:
-                # A few fake units per population.
                 ids = [self._next_id + i for i in range(3)]
                 self._next_id += 3
                 self._cell_ids[key] = ids
@@ -65,8 +80,9 @@ class MockBrain:
     def step(self, inject: list | None = None, drive: dict[str, float] | None = None) -> list[int]:
         """Return fake spike indices; stronger inject -> more spikes on that side."""
         self._step_i += 1
+        keys = (*DRIVE_KEYS, *STEER_KEYS)
         if drive is not None:
-            parsed = {k: float(drive.get(k, 0.0)) for k in DRIVE_KEYS}
+            parsed = {k: float(drive.get(k, 0.0)) for k in keys}
         else:
             parsed = self._inject_to_drive(inject or [])
         self.last_inject = parsed
@@ -77,7 +93,6 @@ class MockBrain:
             if amount <= 0:
                 return
             idx = self.cells(types, side)
-            # Deterministic: fire first k cells from amount.
             k = min(len(idx), max(1, int(amount * rate * len(idx))))
             fired.extend(idx[:k])
 
@@ -88,36 +103,37 @@ class MockBrain:
         maybe_fire(list(CHASE_TYPES), "L", drive.get("chaseL", 0.0), 2.0)
         maybe_fire(list(CHASE_TYPES), "R", drive.get("chaseR", 0.0), 2.0)
 
-        def fire_dn_pool(types: tuple[str, ...], side: str, amount: float) -> None:
-            if amount <= 0.05:
-                return
-            k = 1 + int(amount > 0.4)
-            for t in types:
-                fired.extend(self.cells([t], side)[:k])
+        for side in ("L", "R"):
+            self._fire_dn("DNa01", side, drive.get(f"ccw{side}", 0.0), fired)
+            self._fire_dn("DNa02", side, drive.get(f"cw{side}", 0.0), fired)
+            self._fire_dn("DNa03", side, drive.get(f"out{side}", 0.0), fired)
+            self._fire_dn("DNa04", side, drive.get(f"in{side}", 0.0), fired)
+            self._fire_tap(side, drive.get(f"growth{side}", 0.0), fired)
 
-        # Descending readout: steer and tap pools follow L/R visual drive.
-        left = drive.get("loomL", 0.0) + drive.get("chaseL", 0.0) + drive.get("threatL", 0.0)
-        right = drive.get("loomR", 0.0) + drive.get("chaseR", 0.0) + drive.get("threatR", 0.0)
-        fire_dn_pool(STEER_TYPES, "L", left)
-        fire_dn_pool(STEER_TYPES, "R", right)
-        fire_dn_pool(TAP_TYPES, "L", left)
-        fire_dn_pool(TAP_TYPES, "R", right)
-
-        # Tiny spontaneous noise keyed by step for determinism.
-        if (self._step_i + self.seed) % 17 == 0:
-            fired.extend(self.cells(["DNa02"], "L")[:1])
         return fired
+
+    def _fire_dn(self, typ: str, side: str, amount: float, fired: list[int]) -> None:
+        if amount <= 0.05:
+            return
+        k = 1 + int(amount > 0.4)
+        fired.extend(self.cells([typ], side)[:k])
+
+    def _fire_tap(self, side: str, amount: float, fired: list[int]) -> None:
+        if amount <= 0.05:
+            return
+        k = 1 + int(amount > 0.4)
+        for t in TAP_TYPES:
+            fired.extend(self.cells([t], side)[:k])
 
     def _inject_to_drive(self, inject: list) -> dict[str, float]:
         """Map inject list or a bare drive dict into loom/chase/threat L/R."""
+        keys = (*DRIVE_KEYS, *STEER_KEYS)
         if not inject:
-            return {k: 0.0 for k in DRIVE_KEYS}
-        # Encoder mock path may pass nothing; play loop can set last_inject directly.
+            return {k: 0.0 for k in keys}
         if isinstance(inject, dict):
-            return {k: float(inject.get(k, 0.0)) for k in DRIVE_KEYS}
+            return {k: float(inject.get(k, 0.0)) for k in keys}
 
-        drive = {k: 0.0 for k in DRIVE_KEYS}
-        # Real inject is [(cell_indices, amount), ...]. Recover channel by membership.
+        drive = {k: 0.0 for k in keys}
         for item in inject:
             if not isinstance(item, (tuple, list)) or len(item) != 2:
                 continue
@@ -135,16 +151,13 @@ class MockBrain:
 
 
 def flybrain_available() -> bool:
-    try:
-        import flybrain  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return _FlyBrain is not None
 
 
-def make_brain(mock: bool = False, device: str = "auto") -> tuple[BrainBackend, bool]:
+def make_brain(
+    mock: bool = False, device: str = "auto", dt: float = 0.004
+) -> tuple[BrainBackend, bool]:
     """Return (brain, is_mock). Falls back to MockBrain if flybrain is missing."""
     if mock or not flybrain_available():
-        return MockBrain(), True
-    return RealBrain(device=device), False
+        return MockBrain(dt=dt), True
+    return RealBrain(device=device, dt=dt), False

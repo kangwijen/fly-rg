@@ -102,7 +102,13 @@ function boot(): void {
         } else {
           scene.setAimButton(msg.aim_button);
         }
-        scene.setHandSensors(msg.hand_l_sensor ?? null, msg.hand_r_sensor ?? null);
+        scene.setHands(msg.hand_l, msg.hand_r);
+        scene.ring.setHandTips(
+          msg.hand_l,
+          msg.hand_r,
+          msg.pose.strike_l ?? msg.pose.strike,
+          msg.pose.strike_r ?? msg.pose.strike,
+        );
 
         scene.setPose(msg.pose);
         hud.setScore(msg.score);

@@ -1,29 +1,31 @@
-"""Decode descending-neuron spikes (or mock drives) into aim and taps."""
+"""Decode descending-neuron rates into polar spin, reach, and tap pulses."""
 
 from __future__ import annotations
 
-import random
+import math
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Never, Protocol
+from typing import Any, Protocol
 
-from fly_rg.encoder import note_target_sensor, note_window_tth
-from fly_rg.schema import Note
-from fly_rg.sensors import RADIUS, button_to_sensor, sensor_side, sensor_xy
-
-# Aim sectors when DNa pool prefers left vs right (A-button indices).
-LEFT_BUTTONS = (8, 1, 2, 7)
-RIGHT_BUTTONS = (3, 4, 5, 6)
+from fly_rg.sensors import (
+    nearest_sensor,
+    polar_to_xy,
+    sensor_polar,
+    sensor_side,
+    wrap_angle,
+)
 
 STEER_TYPES = ("DNa01", "DNa02", "DNa03", "DNa04")
 TAP_TYPES = ("DNp01", "DNp02", "DNp03", "DNb01", "DNb02")
 
-STEER_WINDOW = 7  # steps (~0.14 s at dt=0.02)
-STEER_MARGIN = 1
-TAP_WINDOW = 3  # steps (~0.06 s)
+STEER_WINDOW_S = 0.14
+TAP_WINDOW_S = 0.06
 TAP_SPIKES = 1
-TAP_COOLDOWN_S = 0.05
-PERFECT_WINDOW_S = 0.033
+TAP_COOLDOWN_S = 0.010
+OMEGA_MAX = math.tau
+VR_MAX = 1.0
+R_MAX = 1.0
+DN_COUNT_SCALE = 3.0
 
 
 class SpikeBrain(Protocol):
@@ -37,8 +39,8 @@ class DecodeResult:
     tap_button: int | None
     aim_sensor: str | None
     tap_sensor: str | None
-    aim: float  # -1..1
-    strike: float  # 0..1
+    aim: float
+    strike: float
     hand_l_sensor: str | None = None
     hand_r_sensor: str | None = None
     tap_l: bool = False
@@ -49,6 +51,12 @@ class DecodeResult:
     steer_r: float = 0.0
     tap_rate_l: float = 0.0
     tap_rate_r: float = 0.0
+    hand_l: tuple[float, float] = (0.0, 0.0)
+    hand_r: tuple[float, float] = (0.0, 0.0)
+    omega_l: float = 0.0
+    omega_r: float = 0.0
+    reach_l: float = 0.0
+    reach_r: float = 0.0
 
 
 def _as_index_set(indices: Any) -> set[int]:
@@ -73,8 +81,24 @@ def _sensor_to_button(sensor: str | None) -> int | None:
     return None
 
 
+def _clip(value: float, limit: float) -> float:
+    if value > limit:
+        return limit
+    if value < -limit:
+        return -limit
+    return value
+
+
+def _empty_counts() -> dict[str, float]:
+    out: dict[str, float] = {}
+    for side in ("L", "R"):
+        for name in ("DNa01", "DNa02", "DNa03", "DNa04", "tap"):
+            out[f"{name}_{side}"] = 0.0
+    return out
+
+
 class ActionDecoder:
-    """DNa01-04 L/R -> aim; DNp01-03 and DNb01-02 -> tap onto sensors."""
+    """One motor path: DNa omega/reach, DNp onset tap, polar hands on glass."""
 
     def __init__(
         self,
@@ -85,137 +109,173 @@ class ActionDecoder:
         seed: int = 0,
     ):
         self.mock = mock
-        self.rng = random.Random(seed)
-        self._last_tap_t = -1e9
-        self._history: deque[tuple[int, int, int, int]] = deque(maxlen=STEER_WINDOW)
-        self._steer_l_idx: set[int] = set()
-        self._steer_r_idx: set[int] = set()
-        self._tap_l_idx: set[int] = set()
-        self._tap_r_idx: set[int] = set()
         self._brain = brain
+        self._steer_idx: dict[tuple[str, str], set[int]] = {}
+        self._tap_idx: dict[str, set[int]] = {"L": set(), "R": set()}
+        tap_pool = tap_types if tap_types is not None else list(TAP_TYPES)
+        if brain is not None:
+            for side in ("L", "R"):
+                for typ in STEER_TYPES:
+                    self._steer_idx[(typ, side)] = _as_index_set(
+                        brain.cells([typ], side)
+                    )
+                self._tap_idx[side] = _as_index_set(brain.cells(tap_pool, side))
+        self._counts = _empty_counts()
+        self._hist: deque[tuple[float, dict[str, float]]] = deque()
+        self._prev_tap_l = 0.0
+        self._prev_tap_r = 0.0
+        self._last_tap_l_t = -1e9
+        self._last_tap_r_t = -1e9
+        self.theta_l, self.r_l = sensor_polar("A5")
+        self.theta_r, self.r_r = sensor_polar("A4")
         self.steer_l = 0.0
         self.steer_r = 0.0
         self.tap_l = 0.0
         self.tap_r = 0.0
         self.tap_rate_l = 0.0
         self.tap_rate_r = 0.0
-        if brain is not None and not mock:
-            tap_pool = tap_types if tap_types is not None else list(TAP_TYPES)
-            self._steer_l_idx = _as_index_set(brain.cells(list(STEER_TYPES), "L"))
-            self._steer_r_idx = _as_index_set(brain.cells(list(STEER_TYPES), "R"))
-            self._tap_l_idx = _as_index_set(brain.cells(tap_pool, "L"))
-            self._tap_r_idx = _as_index_set(brain.cells(tap_pool, "R"))
+
+    @property
+    def hand_l(self) -> tuple[float, float]:
+        return polar_to_xy(self.theta_l, self.r_l)
+
+    @property
+    def hand_r(self) -> tuple[float, float]:
+        return polar_to_xy(self.theta_r, self.r_r)
 
     def observe(self, fired: Any) -> None:
-        if self.mock:
-            return
+        counts = _empty_counts()
         fired_set = _as_index_set(fired)
-        l = len(fired_set & self._steer_l_idx)
-        r = len(fired_set & self._steer_r_idx)
-        tap_l = len(fired_set & self._tap_l_idx)
-        tap_r = len(fired_set & self._tap_r_idx)
-        self._history.append((l, r, tap_l, tap_r))
+        for side in ("L", "R"):
+            for typ in STEER_TYPES:
+                idx = self._steer_idx.get((typ, side), set())
+                counts[f"{typ}_{side}"] = float(len(fired_set & idx))
+            counts[f"tap_{side}"] = float(
+                len(fired_set & self._tap_idx.get(side, set()))
+            )
+        self._counts = counts
+
+    def _mean_counts(self) -> dict[str, float]:
+        if not self._hist:
+            return dict(self._counts)
+        acc = _empty_counts()
+        n = float(len(self._hist))
+        for _t, row in self._hist:
+            for key, val in row.items():
+                acc[key] += val
+        return {k: v / n for k, v in acc.items()}
+
+    def _omega_from_counts(self, pos: float, neg: float) -> float:
+        return _clip((pos - neg) / DN_COUNT_SCALE * OMEGA_MAX, OMEGA_MAX)
+
+    def _reach_from_counts(
+        self, pos: float, neg: float, chase: float, threat: float
+    ) -> float:
+        if pos <= 1e-12 and neg <= 1e-12:
+            return _clip((chase - threat) * VR_MAX, VR_MAX)
+        return _clip((pos - neg) / DN_COUNT_SCALE * VR_MAX, VR_MAX)
 
     def decode(
         self,
         now: float,
-        notes: list[Note],
+        notes: Any = None,
         *,
+        dt: float = 0.004,
         look_ahead_s: float = 1.0,
         drive: dict[str, float] | None = None,
         last_inject: dict[str, float] | None = None,
         slide_next: list[int] | None = None,
+        contact: set[str] | None = None,
     ) -> DecodeResult:
-        if self.mock:
-            return self._decode_mock(
-                now, notes, look_ahead_s, drive or last_inject or {}, slide_next
-            )
-        return self._decode_spikes(now, notes, look_ahead_s, slide_next)
+        del notes, look_ahead_s, last_inject, slide_next
+        step_dt = float(dt) if dt > 0 else 0.004
+        drive = drive or {}
+        self._hist.append((now, dict(self._counts)))
+        cutoff = now - STEER_WINDOW_S
+        while self._hist and self._hist[0][0] < cutoff:
+            self._hist.popleft()
+        rates = self._mean_counts()
 
-    def _rates(self) -> tuple[float, float, float, float]:
-        if not self._history:
-            return 0.0, 0.0, 0.0, 0.0
-        recent = list(self._history)
-        steer = recent[-STEER_WINDOW:]
-        tap_win = recent[-TAP_WINDOW:]
-        l = sum(x[0] for x in steer)
-        r = sum(x[1] for x in steer)
-        tap_l = sum(x[2] for x in tap_win)
-        tap_r = sum(x[3] for x in tap_win)
-        return float(l), float(r), float(tap_l), float(tap_r)
-
-    def _store_rates(
-        self, steer_l: float, steer_r: float, tap_l: float, tap_r: float
-    ) -> None:
-        self.steer_l = float(steer_l)
-        self.steer_r = float(steer_r)
-        self.tap_l = float(tap_l)
-        self.tap_r = float(tap_r)
-        self.tap_rate_l = float(tap_l)
-        self.tap_rate_r = float(tap_r)
-
-    def _active_targets(
-        self,
-        now: float,
-        notes: list[Note],
-        look_ahead_s: float,
-        slide_next: list[int] | None,
-    ) -> list[tuple[Note, str]]:
-        out: list[tuple[Note, str]] = []
-        for i, note in enumerate(notes):
-            nxt = 0 if slide_next is None else slide_next[i]
-            if note_window_tth(note, now, look_ahead_s, slide_next=nxt) is None:
-                continue
-            sensor = note_target_sensor(note, slide_next=nxt)
-            out.append((note, sensor))
-        return out
-
-    def _decode_spikes(
-        self,
-        now: float,
-        notes: list[Note],
-        look_ahead_s: float,
-        slide_next: list[int] | None,
-    ) -> DecodeResult:
-        l, r, tap_l_count, tap_r_count = self._rates()
-        self._store_rates(l, r, tap_l_count, tap_r_count)
-        diff = r - l
-        if abs(diff) < STEER_MARGIN:
-            aim = 0.0
-            prefer: tuple[int, ...] | None = None
-        elif diff > 0:
-            aim = min(1.0, diff / max(STEER_MARGIN * 4, 1))
-            prefer = RIGHT_BUTTONS
-        else:
-            aim = max(-1.0, diff / max(STEER_MARGIN * 4, 1))
-            prefer = LEFT_BUTTONS
-
-        active = self._active_targets(now, notes, look_ahead_s, slide_next)
-        hand_l, hand_r = _assign_hands(aim, l, r, active)
-        aim_sensor = hand_r if (prefer is RIGHT_BUTTONS and hand_r) else (
-            hand_l if hand_l else hand_r
+        omega_l = self._omega_from_counts(
+            rates["DNa01_L"], rates["DNa02_L"]
         )
-        if aim_sensor is None:
-            aim_sensor = _pick_aim_sensor(aim, prefer, active)
+        omega_r = self._omega_from_counts(
+            rates["DNa01_R"], rates["DNa02_R"]
+        )
+        reach_l = self._reach_from_counts(
+            rates["DNa03_L"],
+            rates["DNa04_L"],
+            float(drive.get("chaseL", 0.0)),
+            float(drive.get("threatL", 0.0)),
+        )
+        reach_r = self._reach_from_counts(
+            rates["DNa03_R"],
+            rates["DNa04_R"],
+            float(drive.get("chaseR", 0.0)),
+            float(drive.get("threatR", 0.0)),
+        )
+
+        self.theta_l = wrap_angle(self.theta_l + omega_l * step_dt)
+        self.theta_r = wrap_angle(self.theta_r + omega_r * step_dt)
+        self.r_l = max(0.0, min(R_MAX, self.r_l + reach_l * step_dt))
+        self.r_r = max(0.0, min(R_MAX, self.r_r + reach_r * step_dt))
+
+        xy_l = polar_to_xy(self.theta_l, self.r_l)
+        xy_r = polar_to_xy(self.theta_r, self.r_r)
+        hand_l_sensor = nearest_sensor(*xy_l)
+        hand_r_sensor = nearest_sensor(*xy_r)
+
+        tap_l_now = self._counts["tap_L"]
+        tap_r_now = self._counts["tap_R"]
+        rising_l = tap_l_now >= TAP_SPIKES and self._prev_tap_l < TAP_SPIKES
+        rising_r = tap_r_now >= TAP_SPIKES and self._prev_tap_r < TAP_SPIKES
+        self._prev_tap_l = tap_l_now
+        self._prev_tap_r = tap_r_now
+
+        tap_l = rising_l and (now - self._last_tap_l_t) >= TAP_COOLDOWN_S
+        tap_r = rising_r and (now - self._last_tap_r_t) >= TAP_COOLDOWN_S
+        if tap_l:
+            self._last_tap_l_t = now
+        if tap_r:
+            self._last_tap_r_t = now
+        strike_l = 1.0 if tap_l else 0.0
+        strike_r = 1.0 if tap_r else 0.0
+        if contact:
+            if hand_l_sensor is not None and hand_l_sensor in contact:
+                strike_l = 1.0
+            if hand_r_sensor is not None and hand_r_sensor in contact:
+                strike_r = 1.0
+        tap = tap_l or tap_r
+        tap_sensor = hand_l_sensor if tap_l else (hand_r_sensor if tap_r else None)
+
+        aim = _clip(0.5 * (xy_l[0] + xy_r[0]), 1.0)
+        if aim >= 0:
+            aim_sensor = hand_r_sensor
+        else:
+            aim_sensor = hand_l_sensor
         aim_button = _sensor_to_button(aim_sensor)
 
-        cooldown_ok = (now - self._last_tap_t) >= TAP_COOLDOWN_S
-        tap_l = cooldown_ok and tap_l_count >= TAP_SPIKES and hand_l is not None
-        tap_r = cooldown_ok and tap_r_count >= TAP_SPIKES and hand_r is not None
-        tap = tap_l or tap_r
-        tap_sensor: str | None = None
-        if tap_l:
-            tap_sensor = hand_l
-        elif tap_r:
-            tap_sensor = hand_r
-        if tap:
-            self._last_tap_t = now
-        strike_l = min(1.0, tap_l_count / max(TAP_SPIKES, 1))
-        strike_r = min(1.0, tap_r_count / max(TAP_SPIKES, 1))
-        if tap_l:
-            strike_l = 1.0
-        if tap_r:
-            strike_r = 1.0
+        tap_win_cut = now - TAP_WINDOW_S
+        tap_l_win = 0.0
+        tap_r_win = 0.0
+        n_tap = 0
+        for t, row in self._hist:
+            if t < tap_win_cut:
+                continue
+            tap_l_win += row["tap_L"]
+            tap_r_win += row["tap_R"]
+            n_tap += 1
+        if n_tap:
+            tap_l_win /= n_tap
+            tap_r_win /= n_tap
+
+        self.steer_l = omega_l
+        self.steer_r = omega_r
+        self.tap_l = float(tap_l_now)
+        self.tap_r = float(tap_r_now)
+        self.tap_rate_l = tap_l_win
+        self.tap_rate_r = tap_r_win
+
         return DecodeResult(
             aim_button=aim_button,
             tap=tap,
@@ -224,242 +284,32 @@ class ActionDecoder:
             tap_sensor=tap_sensor if tap else None,
             aim=aim,
             strike=max(strike_l, strike_r),
-            hand_l_sensor=hand_l,
-            hand_r_sensor=hand_r,
+            hand_l_sensor=hand_l_sensor,
+            hand_r_sensor=hand_r_sensor,
             tap_l=tap_l,
             tap_r=tap_r,
             strike_l=strike_l,
             strike_r=strike_r,
-            steer_l=l,
-            steer_r=r,
-            tap_rate_l=tap_l_count,
-            tap_rate_r=tap_r_count,
-        )
-
-    def _decode_mock(
-        self,
-        now: float,
-        notes: list[Note],
-        look_ahead_s: float,
-        drive: dict[str, float],
-        slide_next: list[int] | None,
-    ) -> DecodeResult:
-        loom_l = float(drive.get("loomL", 0.0))
-        loom_r = float(drive.get("loomR", 0.0))
-        chase_l = float(drive.get("chaseL", 0.0))
-        chase_r = float(drive.get("chaseR", 0.0))
-        left_strength = loom_l + chase_l + float(drive.get("threatL", 0.0))
-        right_strength = loom_r + chase_r + float(drive.get("threatR", 0.0))
-        self._store_rates(left_strength, right_strength, left_strength, right_strength)
-        total = left_strength + right_strength
-        if total <= 1e-9:
-            aim = 0.0
-            prefer = None
-        else:
-            aim = (right_strength - left_strength) / max(total, 1e-9)
-            prefer = RIGHT_BUTTONS if aim >= 0 else LEFT_BUTTONS
-
-        active = self._active_targets(now, notes, look_ahead_s, slide_next)
-        hand_l, hand_r = _assign_hands(aim, left_strength, right_strength, active)
-        aim_sensor = hand_r if (prefer is RIGHT_BUTTONS and hand_r) else (
-            hand_l if hand_l else hand_r
-        )
-        if aim_sensor is None:
-            aim_sensor = _pick_aim_sensor(aim, prefer, active)
-        aim_button = _sensor_to_button(aim_sensor)
-
-        inject_strength = max(
-            loom_l,
-            loom_r,
-            chase_l,
-            chase_r,
-            float(drive.get("threatL", 0.0)),
-            float(drive.get("threatR", 0.0)),
-        )
-        tap = False
-        tap_l = False
-        tap_r = False
-        tap_sensor: str | None = None
-        strike_l = min(1.0, left_strength / 0.8)
-        strike_r = min(1.0, right_strength / 0.8)
-        if (now - self._last_tap_t) >= TAP_COOLDOWN_S:
-            in_window: list[tuple[Note, str]] = []
-            for i, note in enumerate(notes):
-                nxt = 0 if slide_next is None else slide_next[i]
-                sensor = note_target_sensor(note, slide_next=nxt)
-                nt = note.type
-                if nt == "slide":
-                    if note.slide is not None and nxt > 0:
-                        if now <= note.slide.end_t:
-                            in_window.append((note, sensor))
-                    elif abs(note.t - now) <= PERFECT_WINDOW_S:
-                        in_window.append((note, sensor))
-                    continue
-                if nt == "tap" or nt == "hold" or nt == "touch" or nt == "touch_hold":
-                    if abs(note.t - now) <= PERFECT_WINDOW_S:
-                        in_window.append((note, sensor))
-                    continue
-                _exhaustive: Never = nt
-                raise ValueError(f"unknown note type: {_exhaustive}")
-            window_sensors = {s for _n, s in in_window}
-            p = min(0.95, 0.35 + 0.8 * inject_strength)
-            if hand_l and hand_l in window_sensors and left_strength > 0.05:
-                if self.rng.random() < p:
-                    tap_l = True
-            if hand_r and hand_r in window_sensors and right_strength > 0.05:
-                if self.rng.random() < p:
-                    tap_r = True
-            tap = tap_l or tap_r
-            if tap:
-                tap_sensor = hand_l if tap_l else hand_r
-                self._last_tap_t = now
-                if tap_l:
-                    strike_l = 1.0
-                if tap_r:
-                    strike_r = 1.0
-        return DecodeResult(
-            aim_button=aim_button,
-            tap=tap,
-            tap_button=_sensor_to_button(tap_sensor) if tap else None,
-            aim_sensor=aim_sensor,
-            tap_sensor=tap_sensor if tap else None,
-            aim=float(max(-1.0, min(1.0, aim))),
-            strike=float(max(strike_l, strike_r)),
-            hand_l_sensor=hand_l,
-            hand_r_sensor=hand_r,
-            tap_l=tap_l,
-            tap_r=tap_r,
-            strike_l=float(strike_l),
-            strike_r=float(strike_r),
-            steer_l=float(left_strength),
-            steer_r=float(right_strength),
-            tap_rate_l=float(left_strength),
-            tap_rate_r=float(right_strength),
+            steer_l=omega_l,
+            steer_r=omega_r,
+            tap_rate_l=tap_l_win,
+            tap_rate_r=tap_r_win,
+            hand_l=xy_l,
+            hand_r=xy_r,
+            omega_l=omega_l,
+            omega_r=omega_r,
+            reach_l=reach_l,
+            reach_r=reach_r,
         )
 
 
-def _sensor_aim_score(sensor: str) -> float:
-    """Map sensor to -1..1 lateral (cos of angle; +X right)."""
-    x, _y = sensor_xy(sensor)
-    return max(-1.0, min(1.0, x / max(RADIUS["A"], 1e-6)))
-
-
-HAND_ON = 0.05
-
-
-def _best_sensor(pool: list[tuple[Note, str]], aim: float) -> str | None:
-    if not pool:
-        return None
-    return min(pool, key=lambda ns: (ns[0].t, abs(_sensor_aim_score(ns[1]) - aim)))[1]
-
-
-def _unique_soonest(active: list[tuple[Note, str]]) -> list[str]:
-    seen: list[str] = []
-    for _note, sensor in sorted(active, key=lambda ns: ns[0].t):
-        if sensor not in seen:
-            seen.append(sensor)
-    return seen
-
-
-def _assign_hands(
-    aim: float,
-    left_strength: float,
-    right_strength: float,
-    active: list[tuple[Note, str]],
-) -> tuple[str | None, str | None]:
-    """Two distinct sensors when two notes exist. Never stack both hands on one pad."""
-    sensors = _unique_soonest(active)
-    if not sensors:
-        return None, None
-
-    leftish = [s for s in sensors if sensor_side(s) == "L"]
-    rightish = [s for s in sensors if sensor_side(s) == "R"]
-
-    if len(sensors) >= 2:
-        if leftish and rightish:
-            return leftish[0], rightish[0]
-        a, b = sensors[0], sensors[1]
-        if _sensor_aim_score(a) <= _sensor_aim_score(b):
-            return a, b
-        return b, a
-
-    only = sensors[0]
-    if left_strength > right_strength + HAND_ON:
-        return only, None
-    if right_strength > left_strength + HAND_ON:
-        return None, only
-    if sensor_side(only) == "L":
-        return only, None
-    return None, only
-
-
-def _pick_aim_sensor(
-    aim: float,
-    prefer: tuple[int, ...] | None,
-    active: list[tuple[Note, str]],
-) -> str | None:
-    if active:
-        if prefer is not None:
-            sector = [
-                (n, s)
-                for n, s in active
-                if _sensor_to_button(s) in prefer or sensor_side(s) == ("L" if prefer is LEFT_BUTTONS else "R")
-            ]
-            # Prefer A-buttons in the sector when present; else all active.
-            a_sector = [(n, s) for n, s in active if _sensor_to_button(s) in prefer]
-            pool = a_sector or sector or active
-        else:
-            pool = active
-        return min(pool, key=lambda ns: (ns[0].t, abs(_sensor_aim_score(ns[1]) - aim)))[1]
-    buttons = prefer if prefer is not None else tuple(range(1, 9))
-    best_b = min(buttons, key=lambda b: abs(_sensor_aim_score(button_to_sensor(b)) - aim))
-    return button_to_sensor(best_b)
-
-
-def _pick_tap_sensor(
-    aim_sensor: str | None,
-    prefer: tuple[int, ...] | None,
-    active: list[tuple[Note, str]],
-    aim: float,
-) -> str | None:
-    if not active:
-        return aim_sensor
-    if aim_sensor is not None and any(s == aim_sensor for _n, s in active):
-        return aim_sensor
-    return _pick_aim_sensor(aim, prefer, active)
-
-
-def _best_target_for_aim(
-    targets: list[tuple[Note, str]],
-    aim_sensor: str | None,
-    prefer: tuple[int, ...] | None,
-    aim: float,
-) -> tuple[Note, str] | None:
-    if not targets:
-        return None
-    if aim_sensor is not None:
-        matched = [ns for ns in targets if ns[1] == aim_sensor]
-        if matched:
-            return min(matched, key=lambda ns: abs(ns[0].t - 0.0))
-    if prefer is not None:
-        sector = [ns for ns in targets if _sensor_to_button(ns[1]) in prefer]
-        if sector:
-            return min(
-                sector,
-                key=lambda ns: (abs(ns[0].t), abs(_sensor_aim_score(ns[1]) - aim)),
-            )
-    return min(targets, key=lambda ns: (abs(ns[0].t), abs(_sensor_aim_score(ns[1]) - aim)))
-
-
-# Re-export for callers that want geometric side with aim sectors.
 button_side = sensor_side
 
 __all__ = [
     "ActionDecoder",
     "DecodeResult",
-    "LEFT_BUTTONS",
-    "RIGHT_BUTTONS",
     "STEER_TYPES",
     "TAP_TYPES",
+    "TAP_COOLDOWN_S",
     "button_side",
 ]

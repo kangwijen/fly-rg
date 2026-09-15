@@ -39,8 +39,11 @@ def state_message(
     active_sensors: list[str] | None = None,
     hand_l_sensor: str | None = None,
     hand_r_sensor: str | None = None,
+    hand_l: list[float] | tuple[float, float] | None = None,
+    hand_r: list[float] | tuple[float, float] | None = None,
 ) -> dict[str, Any]:
-    # aim_button / tap_button stay ints for A-sensors, else null.
+    hl = [0.0, 0.0] if hand_l is None else [float(hand_l[0]), float(hand_l[1])]
+    hr = [0.0, 0.0] if hand_r is None else [float(hand_r[0]), float(hand_r[1])]
     return {
         "type": "state",
         "t": float(t),
@@ -49,6 +52,8 @@ def state_message(
         "tap": bool(tap),
         "tap_button": tap_button,
         "tap_sensor": tap_sensor,
+        "hand_l": hl,
+        "hand_r": hr,
         "hand_l_sensor": hand_l_sensor,
         "hand_r_sensor": hand_r_sensor,
         "score": score,
@@ -67,6 +72,10 @@ def state_message(
             "strike": float(pose.get("strike", 0.0)),
             "strike_l": float(pose.get("strike_l", pose.get("strike", 0.0))),
             "strike_r": float(pose.get("strike_r", pose.get("strike", 0.0))),
+            "omega_l": float(pose.get("omega_l", 0.0)),
+            "omega_r": float(pose.get("omega_r", 0.0)),
+            "reach_l": float(pose.get("reach_l", 0.0)),
+            "reach_r": float(pose.get("reach_r", 0.0)),
         },
         "spikes": list(spikes or []),
         "spike_total": int(spike_total),

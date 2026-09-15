@@ -115,6 +115,7 @@ export class Hud {
           <button type="button" data-play disabled>Play</button>
         </div>
       </div>
+      <div class="hud-watermark">@kangwijen</div>
     `;
 
     neuralPane.innerHTML = `
