@@ -405,6 +405,17 @@ body,
   background: linear-gradient(90deg, var(--amber), var(--miss));
 }
 
+.hud-resources {
+  font-size: 0.58rem;
+  color: var(--muted);
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
 @media (max-width: 900px) {
   #app {
     grid-template-columns: 1fr;

@@ -6,9 +6,9 @@ import type { ActiveNote, Pose } from "./protocol";
 import { RingDisplay } from "./ring";
 import { sensorXY } from "./sensors";
 
-/** Idle homes on the unit disk: left A5, right A4. */
-const HOME_L = sensorXY("A5");
-const HOME_R = sensorXY("A4");
+/** Idle homes on the unit disk: left A6, right A3. */
+const HOME_L = sensorXY("A6");
+const HOME_R = sensorXY("A3");
 
 function isUnitXY(value: unknown): value is [number, number] {
   return (

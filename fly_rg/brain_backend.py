@@ -104,10 +104,30 @@ class MockBrain:
         maybe_fire(list(CHASE_TYPES), "R", drive.get("chaseR", 0.0), 2.0)
 
         for side in ("L", "R"):
-            self._fire_dn("DNa01", side, drive.get(f"ccw{side}", 0.0), fired)
-            self._fire_dn("DNa02", side, drive.get(f"cw{side}", 0.0), fired)
-            self._fire_dn("DNa03", side, drive.get(f"out{side}", 0.0), fired)
-            self._fire_dn("DNa04", side, drive.get(f"in{side}", 0.0), fired)
+            self._fire_dn(
+                "DNa01",
+                side,
+                max(drive.get(f"ccw{side}", 0.0), drive.get(f"east{side}", 0.0)),
+                fired,
+            )
+            self._fire_dn(
+                "DNa02",
+                side,
+                max(drive.get(f"cw{side}", 0.0), drive.get(f"west{side}", 0.0)),
+                fired,
+            )
+            self._fire_dn(
+                "DNa03",
+                side,
+                max(drive.get(f"out{side}", 0.0), drive.get(f"north{side}", 0.0)),
+                fired,
+            )
+            self._fire_dn(
+                "DNa04",
+                side,
+                max(drive.get(f"in{side}", 0.0), drive.get(f"south{side}", 0.0)),
+                fired,
+            )
             self._fire_tap(side, drive.get(f"growth{side}", 0.0), fired)
 
         return fired

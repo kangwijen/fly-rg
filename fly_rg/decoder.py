@@ -1,4 +1,4 @@
-"""Decode descending-neuron rates into polar spin, reach, and tap pulses."""
+"""Decode descending-neuron rates into Cartesian glide and tap pulses."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fly_rg.sensors import (
+    REST_HOME,
     nearest_sensor,
-    polar_to_xy,
-    sensor_polar,
     sensor_side,
-    wrap_angle,
+    sensor_xy,
+    xy_to_polar,
 )
 
 STEER_TYPES = ("DNa01", "DNa02", "DNa03", "DNa04")
@@ -22,10 +22,11 @@ STEER_WINDOW_S = 0.14
 TAP_WINDOW_S = 0.06
 TAP_SPIKES = 1
 TAP_COOLDOWN_S = 0.010
-OMEGA_MAX = math.tau
-VR_MAX = 1.0
+TAP_GROWTH = 0.05
+OMEGA_MAX = 3.0 * math.tau
+VR_MAX = 4.0
+V_MAX = 8.0
 R_MAX = 1.0
-DN_COUNT_SCALE = 3.0
 
 
 class SpikeBrain(Protocol):
@@ -97,8 +98,25 @@ def _empty_counts() -> dict[str, float]:
     return out
 
 
+def _clamp_disk(x: float, y: float) -> tuple[float, float]:
+    r = math.hypot(x, y)
+    if r > R_MAX and r > 1e-12:
+        scale = R_MAX / r
+        return x * scale, y * scale
+    return x, y
+
+
+def _pose_from_velocity(
+    x: float, y: float, vx: float, vy: float
+) -> tuple[float, float]:
+    r = math.hypot(x, y)
+    omega = (x * vy - y * vx) / max(r * r, 1e-6)
+    reach = (x * vx + y * vy) / max(r, 1e-6)
+    return omega, _clip(reach, VR_MAX)
+
+
 class ActionDecoder:
-    """One motor path: DNa omega/reach, DNp onset tap, polar hands on glass."""
+    """One motor path: DNa Cartesian glide, DNp onset tap, hands on glass."""
 
     def __init__(
         self,
@@ -124,10 +142,14 @@ class ActionDecoder:
         self._hist: deque[tuple[float, dict[str, float]]] = deque()
         self._prev_tap_l = 0.0
         self._prev_tap_r = 0.0
+        self._prev_growth_l = 0.0
+        self._prev_growth_r = 0.0
         self._last_tap_l_t = -1e9
         self._last_tap_r_t = -1e9
-        self.theta_l, self.r_l = sensor_polar("A5")
-        self.theta_r, self.r_r = sensor_polar("A4")
+        self.x_l, self.y_l = sensor_xy(REST_HOME["L"])
+        self.x_r, self.y_r = sensor_xy(REST_HOME["R"])
+        self.theta_l, self.r_l = xy_to_polar(self.x_l, self.y_l)
+        self.theta_r, self.r_r = xy_to_polar(self.x_r, self.y_r)
         self.steer_l = 0.0
         self.steer_r = 0.0
         self.tap_l = 0.0
@@ -137,11 +159,11 @@ class ActionDecoder:
 
     @property
     def hand_l(self) -> tuple[float, float]:
-        return polar_to_xy(self.theta_l, self.r_l)
+        return (self.x_l, self.y_l)
 
     @property
     def hand_r(self) -> tuple[float, float]:
-        return polar_to_xy(self.theta_r, self.r_r)
+        return (self.x_r, self.y_r)
 
     def observe(self, fired: Any) -> None:
         counts = _empty_counts()
@@ -154,26 +176,6 @@ class ActionDecoder:
                 len(fired_set & self._tap_idx.get(side, set()))
             )
         self._counts = counts
-
-    def _mean_counts(self) -> dict[str, float]:
-        if not self._hist:
-            return dict(self._counts)
-        acc = _empty_counts()
-        n = float(len(self._hist))
-        for _t, row in self._hist:
-            for key, val in row.items():
-                acc[key] += val
-        return {k: v / n for k, v in acc.items()}
-
-    def _omega_from_counts(self, pos: float, neg: float) -> float:
-        return _clip((pos - neg) / DN_COUNT_SCALE * OMEGA_MAX, OMEGA_MAX)
-
-    def _reach_from_counts(
-        self, pos: float, neg: float, chase: float, threat: float
-    ) -> float:
-        if pos <= 1e-12 and neg <= 1e-12:
-            return _clip((chase - threat) * VR_MAX, VR_MAX)
-        return _clip((pos - neg) / DN_COUNT_SCALE * VR_MAX, VR_MAX)
 
     def decode(
         self,
@@ -194,43 +196,50 @@ class ActionDecoder:
         cutoff = now - STEER_WINDOW_S
         while self._hist and self._hist[0][0] < cutoff:
             self._hist.popleft()
-        rates = self._mean_counts()
 
-        omega_l = self._omega_from_counts(
-            rates["DNa01_L"], rates["DNa02_L"]
-        )
-        omega_r = self._omega_from_counts(
-            rates["DNa01_R"], rates["DNa02_R"]
-        )
-        reach_l = self._reach_from_counts(
-            rates["DNa03_L"],
-            rates["DNa04_L"],
-            float(drive.get("chaseL", 0.0)),
-            float(drive.get("threatL", 0.0)),
-        )
-        reach_r = self._reach_from_counts(
-            rates["DNa03_R"],
-            rates["DNa04_R"],
-            float(drive.get("chaseR", 0.0)),
-            float(drive.get("threatR", 0.0)),
-        )
+        east_l = float(drive.get("eastL", 0.0))
+        west_l = float(drive.get("westL", 0.0))
+        north_l = float(drive.get("northL", 0.0))
+        south_l = float(drive.get("southL", 0.0))
+        east_r = float(drive.get("eastR", 0.0))
+        west_r = float(drive.get("westR", 0.0))
+        north_r = float(drive.get("northR", 0.0))
+        south_r = float(drive.get("southR", 0.0))
+        vx_l = (east_l - west_l) * V_MAX
+        vy_l = (north_l - south_l) * V_MAX
+        vx_r = (east_r - west_r) * V_MAX
+        vy_r = (north_r - south_r) * V_MAX
 
-        self.theta_l = wrap_angle(self.theta_l + omega_l * step_dt)
-        self.theta_r = wrap_angle(self.theta_r + omega_r * step_dt)
-        self.r_l = max(0.0, min(R_MAX, self.r_l + reach_l * step_dt))
-        self.r_r = max(0.0, min(R_MAX, self.r_r + reach_r * step_dt))
+        self.x_l += vx_l * step_dt
+        self.y_l += vy_l * step_dt
+        self.x_r += vx_r * step_dt
+        self.y_r += vy_r * step_dt
+        self.x_l, self.y_l = _clamp_disk(self.x_l, self.y_l)
+        self.x_r, self.y_r = _clamp_disk(self.x_r, self.y_r)
+        self.theta_l, self.r_l = xy_to_polar(self.x_l, self.y_l)
+        self.theta_r, self.r_r = xy_to_polar(self.x_r, self.y_r)
+        omega_l, reach_l = _pose_from_velocity(self.x_l, self.y_l, vx_l, vy_l)
+        omega_r, reach_r = _pose_from_velocity(self.x_r, self.y_r, vx_r, vy_r)
 
-        xy_l = polar_to_xy(self.theta_l, self.r_l)
-        xy_r = polar_to_xy(self.theta_r, self.r_r)
+        xy_l = (self.x_l, self.y_l)
+        xy_r = (self.x_r, self.y_r)
         hand_l_sensor = nearest_sensor(*xy_l)
         hand_r_sensor = nearest_sensor(*xy_r)
 
         tap_l_now = self._counts["tap_L"]
         tap_r_now = self._counts["tap_R"]
-        rising_l = tap_l_now >= TAP_SPIKES and self._prev_tap_l < TAP_SPIKES
-        rising_r = tap_r_now >= TAP_SPIKES and self._prev_tap_r < TAP_SPIKES
+        growth_l = float(drive.get("growthL", 0.0))
+        growth_r = float(drive.get("growthR", 0.0))
+        rising_l = (
+            tap_l_now >= TAP_SPIKES and self._prev_tap_l < TAP_SPIKES
+        ) or (growth_l >= TAP_GROWTH and self._prev_growth_l < TAP_GROWTH)
+        rising_r = (
+            tap_r_now >= TAP_SPIKES and self._prev_tap_r < TAP_SPIKES
+        ) or (growth_r >= TAP_GROWTH and self._prev_growth_r < TAP_GROWTH)
         self._prev_tap_l = tap_l_now
         self._prev_tap_r = tap_r_now
+        self._prev_growth_l = growth_l
+        self._prev_growth_r = growth_r
 
         tap_l = rising_l and (now - self._last_tap_l_t) >= TAP_COOLDOWN_S
         tap_r = rising_r and (now - self._last_tap_r_t) >= TAP_COOLDOWN_S
@@ -311,5 +320,6 @@ __all__ = [
     "STEER_TYPES",
     "TAP_TYPES",
     "TAP_COOLDOWN_S",
+    "V_MAX",
     "button_side",
 ]

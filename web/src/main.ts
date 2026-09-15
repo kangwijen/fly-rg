@@ -36,6 +36,7 @@ function boot(): void {
   let pack: ChartPack | null = null;
   let bgImage: HTMLImageElement | null = null;
   let playing = false;
+  let stoppedByUser = false;
 
   const ring = scene.ring as RingWithSensors;
 
@@ -55,9 +56,15 @@ function boot(): void {
       case "hello":
         break;
       case "ready":
-        hud.setReady(msg.message || "ready · upload a Majdata zip");
         playing = false;
-        media.pauseAtEnd();
+        if (stoppedByUser) {
+          media.stop();
+          hud.resetPlayUi();
+        } else {
+          hud.setReady(msg.message || "ready · upload a Majdata zip");
+          media.pauseAtEnd();
+        }
+        stoppedByUser = false;
         break;
       case "levels":
         hud.setLevels(msg.levels);
@@ -67,6 +74,7 @@ function boot(): void {
         hud.setError(msg.message);
         playing = false;
         media.pauseAtEnd();
+        hud.setPlaying(false);
         break;
       case "brain_layout":
         brain.setLayout(msg);
@@ -76,9 +84,11 @@ function boot(): void {
       case "chart":
         hud.setChart(msg.title, msg.artist);
         playing = true;
+        hud.setPlaying(true);
         applyBackground();
         break;
       case "state": {
+        if (stoppedByUser) break;
         const aimSensor =
           msg.aim_sensor ??
           (msg.aim_button != null ? buttonToSensor(msg.aim_button) : null);
@@ -129,7 +139,11 @@ function boot(): void {
         hud.setScore(msg.score);
         playing = false;
         media.pauseAtEnd();
+        hud.setPlaying(false);
         hud.setPackHint("finished · upload another zip or Play again");
+        break;
+      case "resources":
+        hud.setResources(msg);
         break;
       default: {
         const _exhaustive: never = msg;
@@ -182,6 +196,8 @@ function boot(): void {
       hud.setError("upload a zip first");
       return;
     }
+    // load_chart already stop_play then starts from t=0; do not send stop
+    // (that would emit ready and pause the just-started track).
     // Start media inside the click gesture so browsers allow audio.
     void media.start().then(() => applyBackground());
     if (
@@ -194,6 +210,19 @@ function boot(): void {
       media.pauseAtEnd();
       hud.setError("not connected to play server");
     }
+  });
+
+  hud.onStopClick(() => {
+    stoppedByUser = true;
+    socket.send({ type: "stop" });
+    media.stop();
+    playing = false;
+    scene.ring.setActive([]);
+    scene.setActiveNotes([]);
+    scene.setHands(null, null);
+    scene.ring.setHandTips(null, null);
+    hud.resetPlayUi();
+    hud.setPlaying(false);
   });
 
   const drawBrain = (): void => {

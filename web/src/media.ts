@@ -95,8 +95,9 @@ export class MediaPlayer {
   sync(t: number): void {
     if (!this.started || this.ended) return;
     if (this.audio.src && !this.audio.paused) {
-      const drift = Math.abs(this.audio.currentTime - t);
-      if (drift > 0.08) {
+      const audioT = this.audio.currentTime;
+      // Forward-only: never rewind when the sim lags the audio clock.
+      if (t - audioT > 0.25) {
         this.audio.currentTime = Math.max(0, t);
       }
     } else if (this.audio.src && this.audio.paused && t > 0.05) {
@@ -107,8 +108,8 @@ export class MediaPlayer {
         void this.video.play().catch(() => undefined);
       }
       if (!this.video.paused) {
-        const vDrift = Math.abs(this.video.currentTime - t);
-        if (vDrift > 0.12) {
+        const videoT = this.video.currentTime;
+        if (t - videoT > 0.25) {
           this.video.currentTime = Math.max(0, t);
         }
       }

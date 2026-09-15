@@ -21,8 +21,8 @@ const HOLD_INNER_FRAC = 1.225 / 4.8;
 const PAD_BLUE = "#2b6cff";
 const OUTER_STEPS = 10;
 const HAND_TRAIL = 12;
-const HOME_L = sensorXY("A5");
-const HOME_R = sensorXY("A4");
+const HOME_L = sensorXY("A6");
+const HOME_R = sensorXY("A3");
 
 const COLORS = {
   diskInner: "rgba(12, 21, 36, 0.5)",

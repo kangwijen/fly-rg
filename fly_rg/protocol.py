@@ -109,5 +109,31 @@ def end_message(score: dict[str, Any]) -> dict[str, Any]:
     return {"type": "end", "score": score}
 
 
+def resources_message(stats: dict[str, Any]) -> dict[str, Any]:
+    def _num(key: str) -> float | None:
+        value = stats.get(key)
+        if value is None:
+            return None
+        return float(value)
+
+    name = stats.get("gpu_name")
+    gpu_name = None
+    if isinstance(name, str):
+        cleaned = "".join(ch for ch in name if ch.isprintable()).strip()
+        gpu_name = cleaned[:64] if cleaned else None
+    return {
+        "type": "resources",
+        "cpu_pct": float(stats.get("cpu_pct") or 0.0),
+        "sys_cpu_pct": _num("sys_cpu_pct"),
+        "rss_mb": float(stats.get("rss_mb") or 0.0),
+        "ram_used_mb": _num("ram_used_mb"),
+        "ram_total_mb": _num("ram_total_mb"),
+        "gpu_pct": _num("gpu_pct"),
+        "vram_used_mb": _num("vram_used_mb"),
+        "vram_total_mb": _num("vram_total_mb"),
+        "gpu_name": gpu_name,
+    }
+
+
 def dumps(message: dict[str, Any]) -> str:
     return json.dumps(message, separators=(",", ":"))

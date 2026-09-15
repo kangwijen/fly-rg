@@ -1,4 +1,4 @@
-"""Polar motor: DNa spin/reach, DNp onset pulse, press at current XY."""
+"""Cartesian motor: DNa glide, DNp onset pulse, press at current XY."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import math
 import pytest
 
 from fly_rg.brain_backend import MockBrain
-from fly_rg.decoder import TAP_COOLDOWN_S, ActionDecoder
+from fly_rg.decoder import TAP_COOLDOWN_S, V_MAX, ActionDecoder
 from fly_rg.encoder import NoteEncoder
+from fly_rg.judge import Judge
+from fly_rg.play import _contact_sensors
 from fly_rg.schema import Note
-from fly_rg.sensors import nearest_sensor, sensor_polar, sensor_xy, wrap_angle
+from fly_rg.sensors import nearest_sensor, sensor_xy
 
 DT = 0.004
 
@@ -31,6 +33,14 @@ def _quiet_drive(**overrides: float) -> dict[str, float]:
         "inR": 0.0,
         "outL": 0.0,
         "outR": 0.0,
+        "eastL": 0.0,
+        "eastR": 0.0,
+        "westL": 0.0,
+        "westR": 0.0,
+        "northL": 0.0,
+        "northR": 0.0,
+        "southL": 0.0,
+        "southR": 0.0,
         "growthL": 0.0,
         "growthR": 0.0,
     }
@@ -51,44 +61,43 @@ def _motor(
     return dec.decode(now, dt=dt, drive=drive), fired
 
 
-def test_positive_spin_fires_dna01_and_theta_increases():
+def test_decoder_starts_on_a6_a3_rest():
+    dec = ActionDecoder(MockBrain(dt=DT))
+    assert nearest_sensor(*dec.hand_l) == "A6"
+    assert nearest_sensor(*dec.hand_r) == "A3"
+
+
+def test_positive_east_increases_x():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
-    theta0 = dec.theta_l
-    result, fired = _motor(dec, brain, _quiet_drive(ccwL=1.0), 0.0)
+    x0 = dec.hand_l[0]
+    result, fired = _motor(dec, brain, _quiet_drive(eastL=1.0), 0.0)
     dna01 = set(brain.cells(["DNa01"], "L"))
     dna02 = set(brain.cells(["DNa02"], "L"))
     dna03 = set(brain.cells(["DNa03"], "L"))
     assert dna01 & set(fired)
     assert not (dna02 & set(fired))
     assert not (dna03 & set(fired))
-    assert result.omega_l > 0
-    assert dec.theta_l > theta0
+    assert result.omega_l != 0.0 or dec.hand_l[0] > x0
+    assert dec.hand_l[0] > x0
     assert result.hand_l[0] == pytest.approx(dec.hand_l[0], abs=1e-9)
 
 
-def test_theta_wraps_past_two_pi():
+def test_hand_stays_on_disk_when_driving_east():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
-    dec.theta_l = math.pi - 0.04
-    thetas = [dec.theta_l]
+    dec.x_l, dec.y_l = 0.96, 0.0
     now = 0.0
-    for _ in range(24):
-        _motor(dec, brain, _quiet_drive(ccwL=1.0), now)
-        thetas.append(dec.theta_l)
+    for _ in range(40):
+        _motor(dec, brain, _quiet_drive(eastL=1.0), now)
         now += DT
-        assert -math.pi - 1e-9 <= dec.theta_l <= math.pi + 1e-9
-    wrapped = any(
-        thetas[i] < 0.0 and thetas[i - 1] > 1.0 for i in range(1, len(thetas))
-    )
-    assert wrapped
+        assert math.hypot(dec.x_l, dec.y_l) <= 1.0 + 1e-9
 
 
 def test_tap_uses_nearest_sensor_to_xy():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
-    bx, by = sensor_xy("B5")
-    dec.theta_l, dec.r_l = math.atan2(by, bx), math.hypot(bx, by)
+    dec.x_l, dec.y_l = sensor_xy("B5")
     result, _fired = _motor(dec, brain, _quiet_drive(growthL=1.0), 0.0)
     assert result.tap_l
     assert result.strike_l == pytest.approx(1.0)
@@ -102,12 +111,11 @@ def test_idle_rest_blobs_drift_toward_homes_without_jump():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
     enc = NoteEncoder(mock=True)
-    t6, r6 = sensor_polar("A6")
-    t5, r5 = sensor_polar("A5")
-    dec.theta_l = t5 + 0.55 * wrap_angle(t6 - t5)
-    dec.r_l = 0.5 * (r5 + r6)
     a5 = sensor_xy("A5")
-    dist0 = math.hypot(dec.hand_l[0] - a5[0], dec.hand_l[1] - a5[1])
+    a6 = sensor_xy("A6")
+    dec.x_l = a5[0] + 0.55 * (a6[0] - a5[0])
+    dec.y_l = a5[1] + 0.55 * (a6[1] - a5[1])
+    dist0 = math.hypot(dec.hand_l[0] - a6[0], dec.hand_l[1] - a6[1])
     now = 0.0
     prev = dec.hand_l
     max_step = 0.0
@@ -127,12 +135,12 @@ def test_idle_rest_blobs_drift_toward_homes_without_jump():
         )
         prev = cur
         now += DT
-    dist1 = math.hypot(dec.hand_l[0] - a5[0], dec.hand_l[1] - a5[1])
+    dist1 = math.hypot(dec.hand_l[0] - a6[0], dec.hand_l[1] - a6[1])
     assert dist1 < dist0
     assert max_step < 0.08
 
 
-def test_two_notes_inject_without_claiming_a6():
+def test_two_notes_one_step_does_not_teleport():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
     enc = NoteEncoder(mock=True)
@@ -140,8 +148,8 @@ def test_two_notes_inject_without_claiming_a6():
         Note(t=1.0, button=1, type="tap", sensor="A1"),
         Note(t=1.0, button=6, type="tap", sensor="A6"),
     ]
-    a5 = sensor_xy("A5")
-    a4 = sensor_xy("A4")
+    a6 = sensor_xy("A6")
+    a3 = sensor_xy("A3")
     enc_r = enc.encode(
         notes,
         0.5,
@@ -151,9 +159,37 @@ def test_two_notes_inject_without_claiming_a6():
         hand_r=dec.hand_r,
     )
     result, _fired = _motor(dec, brain, enc_r.drive, 0.5)
-    assert result.hand_l_sensor != "A6"
-    assert math.hypot(result.hand_l[0] - a5[0], result.hand_l[1] - a5[1]) < 0.12
-    assert math.hypot(result.hand_r[0] - a4[0], result.hand_r[1] - a4[1]) < 0.12
+    assert math.hypot(result.hand_l[0] - a6[0], result.hand_l[1] - a6[1]) < 0.12
+    assert math.hypot(result.hand_r[0] - a3[0], result.hand_r[1] - a3[1]) < 0.15
+    assert result.hand_r_sensor != "A1"
+
+
+def test_intercept_arrives_and_taps_near_hit():
+    notes = [Note(t=0.40, button=8, type="tap", sensor="A8")]
+    enc = NoteEncoder(mock=True)
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    a8 = sensor_xy("A8")
+    tap_times: list[float] = []
+    now = 0.0
+    while now <= 0.42:
+        enc_r = enc.encode(
+            notes,
+            now,
+            look_ahead_s=1.0,
+            dt=DT,
+            hand_l=dec.hand_l,
+            hand_r=dec.hand_r,
+        )
+        result, _fired = _motor(dec, brain, enc_r.drive, now)
+        if result.tap_l:
+            tap_times.append(now)
+        now += DT
+    dist = math.hypot(dec.hand_l[0] - a8[0], dec.hand_l[1] - a8[1])
+    assert dist < 0.22
+    assert nearest_sensor(*dec.hand_l) == "A8"
+    assert tap_times
+    assert min(abs(t - 0.40) for t in tap_times) < 0.05
 
 
 def test_jack_two_presses_with_lift_between():
@@ -194,18 +230,130 @@ def test_trill_two_hands_pulse_without_glue():
 def test_dt_four_ms_integration():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
-    theta0 = dec.theta_l
-    result, _fired = _motor(dec, brain, _quiet_drive(ccwL=1.0), 0.0, dt=DT)
+    x0 = dec.x_l
+    result, _fired = _motor(dec, brain, _quiet_drive(eastL=1.0), 0.0, dt=DT)
     assert DT == pytest.approx(0.004)
-    assert result.omega_l * DT == pytest.approx(
-        wrap_angle(dec.theta_l - theta0), abs=1e-6
-    )
+    assert result.hand_l[0] == pytest.approx(x0 + V_MAX * DT, abs=1e-6)
+    assert dec.x_l == pytest.approx(x0 + V_MAX * DT, abs=1e-6)
 
 
-def test_reach_fallback_chase_minus_threat():
+def test_north_increases_y():
     brain = MockBrain(dt=DT)
     dec = ActionDecoder(brain)
-    result, _fired = _motor(
-        dec, brain, _quiet_drive(chaseL=0.9, threatL=0.1), 0.0
-    )
-    assert result.reach_l > 0
+    y0 = dec.hand_l[1]
+    result, _fired = _motor(dec, brain, _quiet_drive(northL=1.0), 0.0)
+    assert dec.hand_l[1] > y0
+    assert result.hand_l[1] > y0
+
+
+def test_encoder_jack_two_taps_with_lift_between():
+    notes = [
+        Note(t=1.00, button=5, type="tap", sensor="A5"),
+        Note(t=1.05, button=5, type="tap", sensor="A5"),
+    ]
+    enc = NoteEncoder(mock=True)
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    home_l = sensor_xy("A5")
+    home_r = sensor_xy("A3")
+    matched = [False, False]
+    tap_times: list[float] = []
+    strike_trace: list[tuple[float, float]] = []
+    now = 0.96
+    while now <= 1.08:
+        dec.x_l, dec.y_l = home_l
+        dec.x_r, dec.y_r = home_r
+        enc_r = enc.encode(
+            notes,
+            now,
+            look_ahead_s=1.0,
+            dt=DT,
+            hand_l=dec.hand_l,
+            hand_r=dec.hand_r,
+            matched=matched,
+        )
+        result, _fired = _motor(dec, brain, enc_r.drive, now)
+        strike_trace.append((now, result.strike_l))
+        if result.tap_l:
+            tap_times.append(now)
+            for i, flag in enumerate(matched):
+                if not flag:
+                    matched[i] = True
+                    break
+        now += DT
+    assert len(tap_times) == 2
+    assert tap_times[1] - tap_times[0] > TAP_COOLDOWN_S
+    between = [
+        strike
+        for t, strike in strike_trace
+        if tap_times[0] + DT / 2 < t < tap_times[1] - DT / 2
+    ]
+    assert between
+    assert any(s == pytest.approx(0.0) for s in between)
+
+
+def test_right_hemisphere_blob_does_not_tap_left():
+    notes = [Note(t=1.0, button=1, type="tap", sensor="A1")]
+    enc = NoteEncoder(mock=True)
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    home_l = sensor_xy("A5")
+    home_r = sensor_xy("A3")
+    now = 0.96
+    while now <= 1.04:
+        dec.x_l, dec.y_l = home_l
+        dec.x_r, dec.y_r = home_r
+        enc_r = enc.encode(
+            notes,
+            now,
+            look_ahead_s=1.0,
+            dt=DT,
+            hand_l=dec.hand_l,
+            hand_r=dec.hand_r,
+        )
+        assert enc_r.drive["growthL"] == 0.0
+        result, _fired = _motor(dec, brain, enc_r.drive, now)
+        assert not result.tap_l
+        now += DT
+
+
+def test_hold_contact_keeps_strike_while_on_pad():
+    notes = [Note(t=1.0, button=5, type="hold", sensor="A5", end=2.0)]
+    judge = Judge(notes)
+    judge.press("A5", 1.0)
+    contact = _contact_sensors(judge, 1.2)
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    dec.x_l, dec.y_l = sensor_xy("A5")
+    fired = brain.step(drive=_quiet_drive())
+    dec.observe(fired)
+    result = dec.decode(1.2, dt=DT, drive=_quiet_drive(), contact=contact)
+    assert result.hand_l_sensor == "A5"
+    assert result.strike_l == pytest.approx(1.0)
+    assert not result.tap_l
+
+
+def test_glide_a8_to_a4_crosses_interior():
+    notes = [
+        Note(t=0.25, button=4, type="tap", sensor="A4"),
+        Note(t=0.25, button=3, type="tap", sensor="A3"),
+    ]
+    enc = NoteEncoder(mock=True)
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    dec.x_l, dec.y_l = sensor_xy("A8")
+    dec.x_r, dec.y_r = sensor_xy("A3")
+    now = 0.0
+    while now < 0.12:
+        enc_r = enc.encode(
+            notes,
+            now,
+            look_ahead_s=1.0,
+            dt=DT,
+            hand_l=dec.hand_l,
+            hand_r=dec.hand_r,
+        )
+        _motor(dec, brain, enc_r.drive, now)
+        now += DT
+    assert enc_r.target_l == "A4"
+    assert math.hypot(*dec.hand_l) < 0.55

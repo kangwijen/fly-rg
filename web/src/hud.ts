@@ -1,4 +1,4 @@
-import type { Drive, Judgment, Score } from "./protocol";
+import type { Drive, Judgment, Resources, Score } from "./protocol";
 import type { ConnectionState } from "./ws";
 
 const EMPTY_SCORE: Score = {
@@ -29,6 +29,35 @@ export type LevelInfo = { difficulty: number; level: string };
 
 function pct(v: number): string {
   return `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
+}
+
+function formatMem(mb: number): string {
+  if (!Number.isFinite(mb) || mb < 0) return "--";
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)}G`;
+  if (mb >= 10) return `${Math.round(mb)}M`;
+  return `${mb.toFixed(1)}M`;
+}
+
+function formatPct(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(100, value)))}%`;
+}
+
+function formatResources(stats: Resources): string {
+  const parts: string[] = [`cpu ${formatPct(stats.cpu_pct)}`];
+  if (stats.sys_cpu_pct != null) {
+    parts.push(`sys ${formatPct(stats.sys_cpu_pct)}`);
+  }
+  parts.push(`rss ${formatMem(stats.rss_mb)}`);
+  if (stats.ram_used_mb != null && stats.ram_total_mb != null) {
+    parts.push(`ram ${formatMem(stats.ram_used_mb)}/${formatMem(stats.ram_total_mb)}`);
+  }
+  if (stats.gpu_pct != null) {
+    parts.push(`gpu ${formatPct(stats.gpu_pct)}`);
+  }
+  if (stats.vram_used_mb != null && stats.vram_total_mb != null) {
+    parts.push(`vram ${formatMem(stats.vram_used_mb)}/${formatMem(stats.vram_total_mb)}`);
+  }
+  return parts.join(" · ");
 }
 
 function formatAchievement(ratio: number): string {
@@ -92,9 +121,12 @@ export class Hud {
   private levelSelect: HTMLSelectElement;
   private fileInput: HTMLInputElement;
   private playBtn: HTMLButtonElement;
+  private stopBtn: HTMLButtonElement;
+  private resourcesEl: HTMLElement;
   private fills: Record<keyof Drive, HTMLElement>;
   private onZipSelected: ((file: File) => void) | null = null;
   private onPlay: ((difficulty: number | null) => void) | null = null;
+  private onStop: (() => void) | null = null;
 
   constructor(gameOverlay: HTMLElement, neuralPane: HTMLElement) {
     gameOverlay.innerHTML = `
@@ -113,6 +145,7 @@ export class Hud {
             <option value="">difficulty</option>
           </select>
           <button type="button" data-play disabled>Play</button>
+          <button type="button" data-stop disabled>Stop</button>
         </div>
       </div>
       <div class="hud-watermark">@kangwijen</div>
@@ -163,6 +196,7 @@ export class Hud {
           <div class="drive-row"><span>R</span><div class="drive-bar"><div class="drive-fill threat" data-threatR></div></div></div>
         </div>
       </div>
+      <div class="hud-resources" data-resources>cpu --</div>
     `;
 
     this.gameRoot = gameOverlay;
@@ -185,6 +219,8 @@ export class Hud {
     this.levelSelect = this.mustGame("[data-level]") as HTMLSelectElement;
     this.fileInput = this.mustGame("[data-zip]") as HTMLInputElement;
     this.playBtn = this.mustGame("[data-play]") as HTMLButtonElement;
+    this.resourcesEl = this.mustNeural("[data-resources]");
+    this.stopBtn = this.mustGame("[data-stop]") as HTMLButtonElement;
 
     this.fills = {
       loomL: this.mustNeural("[data-loomL]"),
@@ -204,6 +240,9 @@ export class Hud {
       const difficulty = raw === "" ? null : Number(raw);
       this.onPlay?.(difficulty);
     });
+    this.stopBtn.addEventListener("click", () => {
+      this.onStop?.();
+    });
 
     this.setScore(EMPTY_SCORE);
     this.setDrive(EMPTY_DRIVE);
@@ -215,6 +254,19 @@ export class Hud {
 
   onPlayClick(handler: (difficulty: number | null) => void): void {
     this.onPlay = handler;
+  }
+
+  onStopClick(handler: () => void): void {
+    this.onStop = handler;
+  }
+
+  setPlaying(playing: boolean): void {
+    this.stopBtn.disabled = !playing;
+  }
+
+  resetPlayUi(): void {
+    this.setScore(EMPTY_SCORE);
+    this.hintEl.textContent = "stopped · Play to start from the beginning";
   }
 
   mountBrain(canvas: HTMLCanvasElement): void {
@@ -318,6 +370,13 @@ export class Hud {
     (Object.keys(this.fills) as Array<keyof Drive>).forEach((key) => {
       this.fills[key].style.width = pct(drive[key]);
     });
+  }
+
+  setResources(stats: Resources): void {
+    const line = formatResources(stats);
+    this.resourcesEl.textContent = line;
+    const name = stats.gpu_name?.trim();
+    this.resourcesEl.title = name ? `${line} · ${name}` : line;
   }
 
   private mustGame(selector: string): HTMLElement {

@@ -37,6 +37,9 @@ PAD = {
     "dHalf": math.pi / 20,
 }
 
+# Idle fingertips: left A6, right A3.
+REST_HOME = {"L": "A6", "R": "A3"}
+
 
 def parse_sensor(sensor: str) -> tuple[Area, int]:
     """Parse 'A1'..'E8' or 'C'/'C1'/'C2' into (area, index). C index is 0."""

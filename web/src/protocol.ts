@@ -149,6 +149,22 @@ export interface ErrorMessage {
   message: string;
 }
 
+export interface Resources {
+  cpu_pct: number;
+  sys_cpu_pct: number | null;
+  rss_mb: number;
+  ram_used_mb: number | null;
+  ram_total_mb: number | null;
+  gpu_pct: number | null;
+  vram_used_mb: number | null;
+  vram_total_mb: number | null;
+  gpu_name: string | null;
+}
+
+export interface ResourcesMessage extends Resources {
+  type: "resources";
+}
+
 export type ServerMessage =
   | HelloMessage
   | ChartMessage
@@ -158,7 +174,8 @@ export type ServerMessage =
   | EndMessage
   | ReadyMessage
   | LevelsMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | ResourcesMessage;
 
 export type ClientMessage =
   | { type: "inspect_chart"; maidata: string }
@@ -177,6 +194,7 @@ export function isServerMessage(value: unknown): value is ServerMessage {
     type === "end" ||
     type === "ready" ||
     type === "levels" ||
-    type === "error"
+    type === "error" ||
+    type === "resources"
   );
 }
