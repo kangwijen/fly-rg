@@ -1,10 +1,10 @@
-# Local maimai reference clones
+# Reference clones (optional)
 
-This directory holds **read-only** shallow clones for sensor geometry and note-skin lookup. Clones are gitignored (`sources/*` except this README) and are **not** part of fly-rg.
+This directory can hold **read-only** shallow clones for sensor geometry and note-skin lookup. Clones are gitignored (`sources/*` except this README) and are **not** part of fly-rg.
 
 Do not copy or vendor these trees into `web/` or `fly_rg/`. Recreate numbers and Canvas2D shapes in our own files.
 
-[MajSimai](https://github.com/TeamMajdata/MajSimai) has no license file. The local clone here is for reading only; do not copy its sources into fly-rg.
+[MajSimai](https://github.com/TeamMajdata/MajSimai) has no license file. Clone it only for reading; do not copy its sources into fly-rg.
 
 ## Present clones (shallow)
 
@@ -17,7 +17,7 @@ Do not copy or vendor these trees into `web/` or `fly_rg/`. Recreate numbers and
 | `SimaiSharp` | https://github.com/reflektone-games/SimaiSharp | Note groups A/B/C/D/E (no radii) |
 | `MajSimai` | https://github.com/TeamMajdata/MajSimai | Read-only Simai parser |
 
-Re-clone from repo root:
+Re-clone from the repository root:
 
 ```text
 git clone --depth 1 https://github.com/2394425147/astrodx.git sources/astrodx

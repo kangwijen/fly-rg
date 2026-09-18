@@ -2,7 +2,7 @@
 
 Optional .NET 8 console tool that converts Simai `maidata.txt` into the fly-rg timed-note JSON schema.
 
-This project builds **without** MajSimai. The default path is a self-contained **subset** exporter (taps and holds only — the Python server already parses full Simai itself):
+This project builds **without** MajSimai. The default path is a self-contained **subset** exporter (taps and holds only; the Python server already parses full Simai itself):
 
 - Metadata: `&title=`, `&artist=`, `&first=` (maps to JSON `offset`)
 - Timing: `(bpm)`, `{divisor}`, `{#seconds}`
@@ -25,13 +25,13 @@ dotnet build -c Release
 ## Run
 
 ```bash
-dotnet run -c Release -- ../../charts/demo/maidata.txt -o ../../charts/demo/chart.json
+dotnet run -c Release -- path/to/maidata.txt -o out.json
 ```
 
 Or after build:
 
 ```bash
-dotnet tools/majsimai_export/bin/Release/net8.0/majsimai_export.dll charts/demo/maidata.txt -o out.json
+dotnet tools/majsimai_export/bin/Release/net8.0/majsimai_export.dll path/to/maidata.txt -o out.json
 ```
 
 CLI:
@@ -61,23 +61,12 @@ If `--difficulty` is omitted, the lowest `&inote_N=` chart is used. If `-o` is o
 
 [MajSimai](https://github.com/TeamMajdata/MajSimai) has **no license file** in its repository. Do **not** copy or vendor its sources into fly-rg.
 
-To swap in MajSimai later for slides/touch:
+To swap in MajSimai later for slides/touch, clone that repository separately and pass its location at build time:
 
-1. Clone beside this repo (example layout):
+```bash
+dotnet build -c Release -p:MajSimaiPath=/path/to/MajSimai
+```
 
-   ```text
-   github-repos/random/fly-rg/
-   github-repos/random/MajSimai/    # or any path
-   ```
-
-2. Set `MajSimaiPath` when building (defaults to `../../../MajSimai` relative to the `.csproj`):
-
-   ```bash
-   dotnet build -c Release -p:MajSimaiPath=C:\path\to\MajSimai
-   ```
-
-3. Uncomment the conditional `ProjectReference` in `majsimai_export.csproj`.
-
-4. Change `Program.cs` to call MajSimai APIs and map `SimaiNote` (and related) into the same JSON schema above. Keep the subset exporter as a fallback for CI machines that do not have the clone.
+Then uncomment the conditional `ProjectReference` in `majsimai_export.csproj`, and change `Program.cs` to call MajSimai APIs and map `SimaiNote` (and related) into the same JSON schema above. Keep the subset exporter as a fallback for CI machines that do not have that clone.
 
 Until that wiring exists, subset mode is the supported path.

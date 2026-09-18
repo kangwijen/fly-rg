@@ -2,7 +2,7 @@
 
 Closed-loop maimai-style rhythm play driven by a fruit-fly connectome ([fly.ai](https://github.com/alextitonis/fly.ai) / `flybrain`). You upload a **Majdata chart zip** in the browser; the fly brain plays it on a DX sensor cabinet while a neural activity panel runs on the right.
 
-Chart packs match [MajdataView_web](https://github.com/TeamMajdata/MajdataView_web): `maidata.txt`, `track.ogg` or `track.mp3`, `bg.png` or `bg.jpg`, optional `pv.mp4` (example: `charts/zip/teratera.zip`).
+Chart packs match [MajdataView_web](https://github.com/TeamMajdata/MajdataView_web): `maidata.txt`, `track.ogg` or `track.mp3`, `bg.png` or `bg.jpg`, optional `pv.mp4`. Upload any Majdata zip; packs are not shipped in this repo.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ flowchart LR
   web --> media
 ```
 
-Media stays in the browser (blob URLs). Only `maidata.txt` is sent to the Python server.
+Media stays in the browser (blob URLs). Only `maidata.txt` is sent to the Python server. Chart audio and jacket/PV never upload; a bad `?ws=` override is rejected client-side and the page falls back to the default socket.
 
 ## How it works (end to end)
 
@@ -59,36 +59,36 @@ Nothing except the maidata string leaves the browser.
 
 ### 2. Inspect and load
 
-`web/src/main.ts` talks to `fly_rg.play` over WebSocket (`ws://127.0.0.1:8765`, or `?ws=host:port`):
+`web/src/main.ts` talks to `fly_rg.play` over WebSocket. Default URL is `ws://127.0.0.1:8765`; override with `?ws=127.0.0.1:9000` or `?ws=ws://127.0.0.1:9000` (`web/src/ws.ts` prepends `ws://` when the scheme is omitted). Only localhost/loopback and the page hostname are allow-listed; other hosts are ignored.
 
-1. **`inspect_chart`** — server runs `list_difficulties` and replies with `levels` (`inote_N` options).
+1. **`inspect_chart`**: server runs `list_difficulties` and replies with `levels` (`inote_N` options).
 2. User picks a difficulty and hits **Play**.
-3. **`load_chart`** — server parses Simai (`fly_rg.chart.parse_simai`), builds a `Chart` of timed notes (taps, holds, touches, slides), then starts `_play_once`.
+3. **`load_chart`**: server parses Simai (`fly_rg.chart.parse_simai`), builds a `Chart` of timed notes (taps, holds, touches, slides), then starts `_play_once`.
 
 On load the client also gets a `chart` message (full note list) and later continuous `state` updates.
 
 ### 3. Play loop (each motor step)
 
-`_play_once` in `fly_rg/play.py` advances simulation time from wall clock (`--speed`, `--dt`, `--look-ahead`):
+`_play_once` in `fly_rg/play.py` advances simulation time from wall clock (`--speed`, `--look-ahead`, `--dt` default **0.004** s, clamped to 1-5 ms):
 
 ```mermaid
 flowchart LR
   encode[NoteEncoder<br/>targets + inject + drive]
   brain[brain.step<br/>RealBrain or MockBrain]
   decode[ActionDecoder<br/>hand XY + strikes]
-  gate[Press gate<br/>on pad and tth ≤ 8 ms]
+  gate[Press gate<br/>latched tap + pad + tth]
   judge[Judge.press / auto_miss]
   out[WS: state / hit / end]
 
   encode --> brain --> decode --> gate --> judge --> out
 ```
 
-1. **Encode** (`NoteEncoder`) — look ahead ~1 s of unmatched notes; assign at most one target per hand (L/R); emit visual inject (loom / chase / threat) and motor drive (east/west/north/south, growth).
-2. **Brain step** — real `flybrain` gets `inject=…`; `--mock` gets a `MockBrain` drive dict and synthetic spikes.
-3. **Decode** (`ActionDecoder`) — integrate Cartesian drive into hand XY on the unit disk; detect tap/strike edges from DNp-family spikes or growth.
-4. **Press gate** — a hand scores only if it sits on the encoder’s intended sensor **and** time-to-hit ≤ 8 ms (`ON_PAD_TTH_S`).
-5. **Judge** — `Judge.press` / `auto_miss` apply maimai DX windows and update combo / achievement.
-6. **Broadcast** — `state` (~16 ms), occasional spike payloads (~50 ms), `hit` flashes, then `end` with the final score.
+1. **Encode** (`NoteEncoder`): look ahead ~1 s of unmatched notes; assign at most one target per hand (L/R); emit visual inject (loom / chase / threat) and motor drive (east/west/north/south, growth).
+2. **Brain step**: real `flybrain` gets `inject=...`; `--mock` gets a `MockBrain` drive dict and synthetic spikes.
+3. **Decode** (`ActionDecoder`): integrate encoder steer into hand XY on the unit disk; tap/strike edges come from DNp-family **spikes** only (growth is injected upstream, not read as a tap shortcut here).
+4. **Press gate**: `_want_press` needs a latched DNp tap edge (`TAP_LATCH_S` = 60 ms), occupancy on the encoder's intended sensor, **and** time-to-hit ≤ 8 ms (`ON_PAD_TTH_S`). No spikes means no scored press.
+5. **Judge**: `Judge.press` / `auto_miss` apply maimai DX windows and update combo / achievement.
+6. **Broadcast**: `state` (~16 ms), occasional spike payloads (~50 ms), `hit` flashes, then `end` with the final score.
 
 `stop` or disconnect cancels the run.
 
@@ -96,9 +96,10 @@ flowchart LR
 
 `fly_rg/judge.py` mirrors DX timing and point tables:
 
-- Tap / hold / slide-head windows: Critical ≈ 16.7 ms, Perfect 50 ms, Great 100 ms, Good 150 ms.
+- Tap / hold / slide-head windows: Critical ≈ 16.7 ms, Perfect 50 ms, Great 100 ms, Good 150 ms. Break Great base splits 2000 / 1500 / 1250 at 66.7 ms and 83.3 ms (spiritsunite tap-unit weights; donmai Great high/mid/low).
+- Hold body uses the ARG wiki table: CP head held to the end stays Critical; a brief midhold drop is Perfect; a long drop is Great or Good from held fraction; a Good head held to the end becomes Great; a missed head plus remainder is Good Late; EX holds replace remaining Goods with Greats. Holds shorter than Good (150 ms) keep the head judgment.
 - Touch notes use wider early/late windows (Critical within 150 ms early; late out to ~300 ms).
-- EX notes force Critical; slides track path nodes after the head press.
+- EX notes force Critical on the head; slides track path nodes after the head press. The last slide zone expands Critical by `ta * (dl/dt) / 4` from the donmai last-zone table; other windows stay fixed.
 - DX points: TAP/TOUCH 500, HOLD/TOUCH_HOLD 1000, SLIDE 1500, BREAK 2500 (+ break bonus). Achievement is `base/max_base + 0.01 * bonus/max_bonus` (up to 101% when every break is Critical Perfect).
 
 Hits stream as `hit` messages; the run finishes with `end.score` (combo, CP/P/G/g/M counts, achievement, accuracy).
@@ -107,8 +108,8 @@ Hits stream as `hit` messages; the run finishes with `end.score` (combo, CP/P/G/
 
 | Layer | Module | Role |
 | --- | --- | --- |
-| Ring / sensors | `web/src/ring.ts` | Canvas playfield: pads, approaching notes, hand tips, judgment flashes |
-| Cabinet + fly | `scene.ts`, `cabinet.ts`, `fly.ts` | Three.js DX cabinet; foreleg IK follows hand pose; strikes plant on glass |
+| Ring / sensors | `web/src/ring.ts` | Overlay canvas: pads, approaching notes, hand tips, judgment flashes. Uploaded only when those pixels change. |
+| Cabinet + fly | `scene.ts`, `cabinet.ts`, `fly.ts` | Three.js DX cabinet; live PV is a `VideoTexture` on the screen disk behind the overlay; jacket art is drawn into the overlay; foreleg IK follows hand pose |
 | Brain panel | `brain.ts` | Layout + spike glow (display atlas, not the full connectome) |
 | HUD | `hud.ts` | Score, drive meters, resources, judgment popup |
 | Media | `media.ts` | Track + muted PV synced to `state.t` |
@@ -116,6 +117,8 @@ Hits stream as `hit` messages; the run finishes with `end.score` (combo, CP/P/G/
 ## Brain, motor, and sensors
 
 This section is the closed-loop body: vision-style inject, descending neurons, two-hand glide, and the DX pad geometry they land on.
+
+**Brain loop.** `NoteEncoder` injects `growth{L,R}` into DNp tap cells near hit time. `ActionDecoder` turns DNp spike onsets into tap edges. `play.py` latches each edge for 60 ms so `_want_press` can score once the hand reaches the intended pad inside the time-to-hit window. A silenced connectome produces no taps and no points.
 
 ```mermaid
 flowchart TB
@@ -150,7 +153,7 @@ flowchart TB
   end
 
   subgraph score [Scoring]
-    gate[On-pad + tth gate]
+    gate[Latched tap + pad + tth]
     j[Judge]
     hands --> gate
     tap --> gate
@@ -170,9 +173,9 @@ flowchart TB
 
 Motor channels on the same step:
 
-- **Steer** — `east/west/north/south{L,R}` from chord velocity toward the assigned sensor (capped at `V_MAX = 8` unit-disk units/s).
-- **Tap pulse** — `growth{L,R}` near hit time / when already on pad within the 8 ms gate.
-- **Idle** — before/after chart activity, hands rest toward `REST_HOME` (`A6` left, `A3` right).
+- **Steer**: `east/west/north/south{L,R}` from chord velocity toward the assigned sensor (capped at `V_MAX = 8` unit-disk units/s).
+- **Tap pulse**: `growth{L,R}` near hit time / when already on pad within the 8 ms gate.
+- **Idle**: before/after chart activity, hands rest toward `REST_HOME` (`A6` left, `A3` right).
 
 For a real connectome, inject entries are `(cell_indices, amount)` for `FlyBrain.step`. Mock mode skips connectome inject and feeds the drive dict straight into `MockBrain`.
 
@@ -210,10 +213,10 @@ flowchart LR
 Important split in the current control loop:
 
 - **XY glide** comes from encoder steer drive (open-loop toward note geometry), not from decoding DNa spike rates into velocity.
-- **Tap / strike** can come from rising edges on DNp-family spike counts **or** from `growth` crossing a threshold (`TAP_GROWTH`), with a short cooldown.
+- **Tap / strike** comes from rising edges on DNp-family spike counts (encoder `growth` drives those cells in the real brain; the decoder does not treat growth as a second tap path).
 - Holds / in-progress slides force contact strike while the hand occupies the path sensors.
 
-`_want_press` then requires occupancy on the intended sensor plus `tth ≤ 8 ms` before `Judge.press` runs. That is what turns motor contact into a scored hit.
+`_want_press` then requires the 60 ms latched tap arm, occupancy on the intended sensor, and `tth ≤ 8 ms` before `Judge.press` runs. That is what turns spike-timed motor contact into a scored hit.
 
 ### Sensor geometry
 
@@ -226,7 +229,7 @@ Shared between Python (`fly_rg/sensors.py`) and the web client (`web/src/sensors
 | E | 0.625 |
 | A / D | 0.854 |
 
-Occupancy order for `nearest_sensor`: **C → B → E → A → D** (gaps return no pad). A-buttons 1–8 map to `A1`–`A8`. Tap landings for A use outer radius 1.0; touch pads use zone centers. See `sources/README.md` for the MajdataView provenance of these numbers.
+Occupancy order for `nearest_sensor`: **C → B → E → A → D** (gaps return no pad). **A1–A8** are physical rim buttons; **B / C / D / E** are touch-screen zones (overlay labels belong on B–E, not on A). A-buttons 1–8 map to `A1`–`A8`. Tap landings for A use outer radius 1.0; touch pads use zone centers. Radii come from MajdataView `TouchDrop.GetAreaPos` (Unity distance / 4.8).
 
 ### Data flow (one step)
 
@@ -243,18 +246,18 @@ sequenceDiagram
   Brain->>Dec: fired spikes
   Note over Dec: observe(fired) then decode(drive)
   Dec->>Gate: hand XY + strikes
-  Gate->>Judge: on intended sensor and tth ≤ 8 ms
+  Gate->>Judge: latched tap, intended sensor, tth ≤ 8 ms
   Judge->>UI: state.hand_l/r + pose → IK + ring tips
 ```
 
 ## Install
 
-- Python 3.10+
-- Node.js 18+
+- Python 3.12
+- Node.js 24
 
 ```bash
 pip install -e ".[dev]"
-cd web && npm i
+cd web && npm ci
 ```
 
 Optional real connectome:
@@ -271,7 +274,7 @@ Terminal 1:
 python -m fly_rg.play --mock
 ```
 
-The server listens on `ws://127.0.0.1:8765` — override with `--host` / `--port`, and point the web client elsewhere with `?ws=host:port` on the page URL. A `fly-rg` console script is installed alongside the module (`--speed`, `--look-ahead`, `--dt` also available).
+The server listens on `ws://127.0.0.1:8765`. Override bind with `--host` / `--port`; point the Vite client at another socket with `?ws=127.0.0.1:9000` or `?ws=ws://127.0.0.1:9000` (allow-listed hosts only). A `fly-rg` console script is installed alongside the module (`--speed`, `--look-ahead`, `--dt` default 0.004 s).
 
 Terminal 2:
 
@@ -281,7 +284,7 @@ cd web && npm run dev
 
 Open http://127.0.0.1:5173:
 
-1. **Choose zip** (e.g. `charts/zip/teratera.zip`)
+1. **Choose zip** (any Majdata chart pack)
 2. Pick a **difficulty** (`inote_N`)
 3. **Play**
 
@@ -292,6 +295,28 @@ Real brain (after download):
 ```bash
 python -m fly_rg.play --device cuda
 ```
+
+## Test and build
+
+From the repo root:
+
+```bash
+python -m pytest -q
+python -m ruff check fly_rg tests
+python -m mypy fly_rg
+```
+
+Web client:
+
+```bash
+cd web
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```
+
+CI runs the same Python 3.12 and Node.js 24 commands on every push and pull request.
 
 ## Zip layout
 
