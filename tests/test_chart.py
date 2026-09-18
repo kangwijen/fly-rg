@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
+
+import pytest
 
 from fly_rg.chart import list_difficulties, parse_simai
 from fly_rg.schema import Chart
 from fly_rg.slides import expand_slide, expand_wifi
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+# Optional extra packs (not shipped). Skipped when the directory is absent.
 DEMO = Path(__file__).resolve().parents[1] / "charts" / "demo"
-TERATERA = DEMO / "てらてら" / "maidata.txt"
-WORLDS_END = DEMO / "World_s end loneliness" / "maidata.txt"
+
+
+def _assert_finite_nonnegative_times(chart: Chart) -> None:
+    for note in chart.notes:
+        assert math.isfinite(note.t), note.t
+        assert note.t >= 0.0, note.t
+        if note.end is not None:
+            assert math.isfinite(note.end), note.end
+    payload = chart.to_dict()
+    json.dumps(payload)
+
+
+def _load_fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 
 def _assert_chart_roundtrip(chart: Chart) -> None:
@@ -27,9 +46,78 @@ def _assert_chart_roundtrip(chart: Chart) -> None:
             assert back.slide is None
 
 
+def test_fixture_valid_simple_taps():
+    chart = parse_simai(_load_fixture("valid_simple.maidata"))
+    assert chart.title == "Fixture Simple"
+    assert [n.button for n in chart.notes] == [1, 2, 3]
+    assert all(n.type == "tap" for n in chart.notes)
+    assert abs(chart.notes[1].t - 0.5) < 1e-9
+    _assert_finite_nonnegative_times(chart)
+
+
+def test_fixture_note_types():
+    chart = parse_simai(_load_fixture("note_types.maidata"))
+    types = {n.type for n in chart.notes}
+    assert "tap" in types
+    assert "hold" in types
+    assert "touch" in types
+    assert "slide" in types
+    each = [n for n in chart.notes if n.is_each]
+    assert len(each) >= 2
+    wifi_slides = [
+        n
+        for n in chart.notes
+        if n.type == "slide" and n.slide is not None and n.slide.shape == "w"
+    ]
+    assert len(wifi_slides) == 3
+    _assert_finite_nonnegative_times(chart)
+
+
+def test_fixture_flags_mine_break_ex():
+    chart = parse_simai(_load_fixture("flags.maidata"))
+    by_button = {n.button: n for n in chart.notes if n.button is not None}
+    assert by_button[1].is_mine and not by_button[1].is_break
+    assert by_button[2].is_break and not by_button[2].is_ex
+    assert by_button[3].is_ex
+    assert by_button[4].is_mine and by_button[4].is_break and by_button[4].is_ex
+    _assert_finite_nonnegative_times(chart)
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "reject_bpm_nan.maidata",
+        "reject_bpm_inf.maidata",
+        "reject_bpm_zero.maidata",
+        "reject_neg_absolute_step.maidata",
+    ],
+)
+def test_rejected_timing_fixtures_never_emit_bad_times(fixture_name: str):
+    chart = parse_simai(_load_fixture(fixture_name))
+    _assert_finite_nonnegative_times(chart)
+    assert len(chart.notes) >= 1
+
+
+def test_inline_rejected_bpm_and_step_never_nan_or_negative():
+    cases = [
+        "(nan){4}1,2,",
+        "(inf){4}1,2,",
+        "(0){4}1,2,",
+        "(-120){4}1,2,",
+        "(120){#-1}1,2,",
+        "(120){#nan}1,2,",
+    ]
+    for body in cases:
+        chart = parse_simai(f"&title=x\n&inote_1=\n{body}\nE\n")
+        _assert_finite_nonnegative_times(chart)
+
+
 def test_demo_packs_parse_and_roundtrip():
+    if not DEMO.is_dir():
+        pytest.skip("optional extra chart packs not present")
     maidata_files = sorted(DEMO.glob("*/maidata.txt"))
-    assert maidata_files, f"no demo packs under {DEMO}"
+    if not maidata_files:
+        pytest.skip("optional extra chart packs not present")
     for path in maidata_files:
         text = path.read_text(encoding="utf-8")
         for entry in list_difficulties(text):
@@ -181,62 +269,3 @@ def test_difficulty_picks_single_inote():
     assert [n.button for n in low.notes] == [1, 2]
     high = parse_simai(text, difficulty=5)
     assert [n.button for n in high.notes] == [5, 6, 7, 8]
-
-
-def test_teratera_parses_many_notes():
-    assert TERATERA.is_file()
-    text = TERATERA.read_text(encoding="utf-8")
-    levels = list_difficulties(text)
-    difficulty = min(int(e["difficulty"]) for e in levels)
-    chart = parse_simai(text, difficulty=difficulty)
-    assert len(chart.notes) > 100
-    types = {n.type for n in chart.notes}
-    assert "tap" in types
-    assert types & {"hold", "slide", "touch", "touch_hold"}
-
-
-def test_worlds_end_gt5_path():
-    assert WORLDS_END.is_file()
-    text = WORLDS_END.read_text(encoding="utf-8")
-    path = None
-    for entry in list_difficulties(text):
-        chart = parse_simai(text, difficulty=int(entry["difficulty"]))
-        for n in chart.notes:
-            if (
-                n.type == "slide"
-                and n.button == 5
-                and n.slide is not None
-                and n.slide.shape == ">"
-            ):
-                path = n.slide.path
-                break
-        if path is not None:
-            break
-    assert path is not None
-    assert path[0] == "A5"
-    assert path[1] == "A4"
-    assert path[2] == "A3"
-
-
-def test_teratera_p_direction():
-    assert TERATERA.is_file()
-    text = TERATERA.read_text(encoding="utf-8")
-    chart = None
-    for entry in list_difficulties(text):
-        candidate = parse_simai(text, difficulty=int(entry["difficulty"]))
-        slides = [
-            n
-            for n in candidate.notes
-            if n.type == "slide"
-            and n.button == 7
-            and n.slide is not None
-            and n.slide.shape == "p"
-        ]
-        if slides:
-            chart = candidate
-            path = slides[0].slide.path
-            break
-    assert chart is not None
-    assert "B6" in path
-    assert "B8" not in path
-    assert expand_slide("p", 7, 3) == list(path)

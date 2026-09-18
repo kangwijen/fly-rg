@@ -9,12 +9,13 @@ beat steps).
 from __future__ import annotations
 
 import json
+import math
 import re
 import warnings
 from pathlib import Path
 
 from fly_rg.schema import Chart, HeadStyle, Note, SlideInfo
-from fly_rg.sensors import button_to_sensor, format_sensor
+from fly_rg.sensors import Area, button_to_sensor, format_sensor
 from fly_rg.slides import expand_slide, expand_wifi
 
 def load_chart_json(path: str | Path) -> Chart:
@@ -109,6 +110,10 @@ def parse_simai(text: str, difficulty: int | None = None) -> Chart:
     return Chart(title=title, artist=artist, offset=offset, notes=notes)
 
 
+def _valid_timing_scalar(value: float) -> bool:
+    return math.isfinite(value) and value > 0.0
+
+
 def _parse_note_stream(body: str, offset: float) -> list[Note]:
     bpm = 120.0
     divisor = 4.0
@@ -118,12 +123,17 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
     pos = 0
     body = re.sub(r"\s+", "", body)
 
-    def step_seconds() -> float:
+    def step_seconds() -> float | None:
         if absolute_step is not None:
-            return absolute_step
-        if bpm <= 0 or divisor <= 0:
-            return 0.0
-        return 240.0 / bpm / divisor
+            if _valid_timing_scalar(absolute_step):
+                return absolute_step
+            return None
+        if not _valid_timing_scalar(bpm) or not _valid_timing_scalar(divisor):
+            return None
+        step = 240.0 / bpm / divisor
+        if not _valid_timing_scalar(step):
+            return None
+        return step
 
     def beat_seconds() -> float:
         if bpm <= 0:
@@ -133,11 +143,19 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
     while pos < len(body):
         ch = body[pos]
         if ch == ",":
-            t += step_seconds()
+            step = step_seconds()
+            if step is None:
+                warnings.warn(
+                    f"skipping beat advance at pos {pos}: invalid timing "
+                    f"(bpm={bpm!r}, divisor={divisor!r}, absolute_step={absolute_step!r})",
+                    stacklevel=2,
+                )
+            else:
+                t += step
             pos += 1
             continue
         if ch == "`":
-            if bpm > 0:
+            if _valid_timing_scalar(bpm):
                 t += 1.875 / bpm
             pos += 1
             continue
@@ -154,7 +172,14 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
             end = body.find(")", pos)
             if end < 0:
                 raise ValueError("unclosed BPM (")
-            bpm = float(body[pos + 1 : end] or bpm)
+            raw_bpm = float(body[pos + 1 : end] or bpm)
+            if _valid_timing_scalar(raw_bpm):
+                bpm = raw_bpm
+            else:
+                warnings.warn(
+                    f"ignoring invalid BPM ({body[pos + 1 : end]!r})",
+                    stacklevel=2,
+                )
             pos = end + 1
             continue
 
@@ -164,13 +189,21 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
                 raise ValueError("unclosed divisor {")
             inner = body[pos + 1 : end]
             if inner.startswith("#"):
-                absolute_step = float(inner[1:])
-                divisor = 4.0
+                raw_step = float(inner[1:])
+                if _valid_timing_scalar(raw_step):
+                    absolute_step = raw_step
+                    divisor = 4.0
+                else:
+                    warnings.warn(
+                        f"ignoring invalid absolute step {{{inner}}}",
+                        stacklevel=2,
+                    )
             else:
                 absolute_step = None
-                divisor = float(inner or 4)
-                if divisor <= 0:
+                raw_div = float(inner or 4)
+                if not _valid_timing_scalar(raw_div):
                     raise ValueError(f"invalid divisor {{{inner}}}")
+                divisor = raw_div
             pos = end + 1
             continue
 
@@ -223,6 +256,18 @@ def _parse_note_stream(body: str, offset: float) -> list[Note]:
         if len(bucket) > 1:
             is_each = True
         for n in bucket:
+            if not math.isfinite(n.t) or n.t < 0.0:
+                warnings.warn(
+                    f"skipping note with invalid time t={n.t!r}",
+                    stacklevel=2,
+                )
+                continue
+            if n.end is not None and not math.isfinite(n.end):
+                warnings.warn(
+                    f"skipping note {n!r}: invalid end time",
+                    stacklevel=2,
+                )
+                continue
             if is_each:
                 object.__setattr__(n, "is_each", True)
             notes.append(n)
@@ -378,7 +423,16 @@ def _parse_note_token_inner(
     # Touch: [A-E][1-8]? flags? h? [duration]?
     touch_m = re.match(r"^([A-Ea-e])([1-8])?", token)
     if touch_m and not token[0].isdigit():
-        area = touch_m.group(1).upper()
+        area_map: dict[str, Area] = {
+            "A": "A",
+            "B": "B",
+            "C": "C",
+            "D": "D",
+            "E": "E",
+        }
+        area = area_map.get(touch_m.group(1).upper())
+        if area is None:
+            raise ValueError(f"unknown touch area {touch_m.group(1)!r}")
         idx = touch_m.group(2)
         sensor = "C" if area == "C" else format_sensor(area, int(idx or "0"))
         if area != "C" and not idx:
@@ -447,20 +501,20 @@ def _parse_note_token_inner(
         pos += 1
         more, pos = _take_flags(token, pos)
         flags |= more
-        dur: float | None = None
+        hold_dur: float | None = None
         if pos < len(token) and token[pos] == "[":
             close = token.find("]", pos)
             if close < 0:
                 raise ValueError("unclosed hold duration")
-            dur = _parse_duration(token[pos + 1 : close], bpm=bpm)
+            hold_dur = _parse_duration(token[pos + 1 : close], bpm=bpm)
             pos = close + 1
             more, pos = _take_flags(token, pos)
             flags |= more
         slide_follows = pos < len(token) and (
             token[pos] in "-><^vVpPqQsSzZw*" or token[pos] in "@?!"
         )
-        if dur is None:
-            dur = beat_seconds() if slide_follows else 0.0
+        if hold_dur is None:
+            hold_dur = beat_seconds() if slide_follows else 0.0
         br, ex, mine, hanabi, star, head = _flags_to_style(flags)
         out: list[Note] = [
             Note(
@@ -468,7 +522,7 @@ def _parse_note_token_inner(
                 button=button,
                 type="hold",
                 sensor=button_to_sensor(button),
-                end=t + dur,
+                end=t + hold_dur,
                 is_break=br,
                 is_ex=ex,
                 is_mine=mine,
@@ -557,23 +611,8 @@ def _parse_slides(
             if not sm:
                 break
             shape = sm.group(1)
-            # Normalize case for p/q/s/z; keep V vs v.
             if shape in "pPqQsSzZw":
-                shape = shape.lower() if shape not in "V" else shape
-            if shape == "PP":
-                shape = "pp"
-            if shape == "QQ":
-                shape = "qq"
-            if len(shape) == 1 and shape in "pqszw":
-                pass
-            elif shape in ("pp", "qq"):
-                pass
-            elif shape == "V":
-                pass
-            elif shape == "v":
-                pass
-            else:
-                shape = shape  # - > < ^
+                shape = shape.lower()
             p = sm.end()
 
             mid: int | None = None

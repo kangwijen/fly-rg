@@ -70,12 +70,21 @@ class SlideInfo:
     def from_dict(cls, data: SlideDict | dict) -> SlideInfo:
         path = data.get("path") or []
         mid_raw = data.get("mid")
+        end_raw = data["end_t"]
+        if not isinstance(end_raw, (int, float, str)) or isinstance(end_raw, bool):
+            raise TypeError("end_t must be numeric")
+        wait_raw = data.get("wait_t")
+        if wait_raw is None:
+            t_raw = data.get("t", 0.0)
+            wait_raw = t_raw or 0.0
+        if not isinstance(wait_raw, (int, float, str)) or isinstance(wait_raw, bool):
+            wait_raw = 0.0
         return cls(
             shape=str(data["shape"]),
             end_sensor=str(data["end_sensor"]),
             path=tuple(str(s) for s in path),
-            end_t=float(data["end_t"]),
-            wait_t=float(data.get("wait_t", data.get("t", 0.0) or 0.0)),
+            end_t=float(end_raw),
+            wait_t=float(wait_raw),
             mid=None if mid_raw is None else int(mid_raw),
         )
 
@@ -166,12 +175,19 @@ class Chart:
             head = str(raw.get("head_style") or "normal")
             if head not in ("normal", "star", "tap", "fade", "sudden"):
                 head = "normal"
+            end_raw = raw.get("end")
+            if end_raw is None:
+                end = None
+            elif isinstance(end_raw, (int, float, str)) and not isinstance(end_raw, bool):
+                end = float(end_raw)
+            else:
+                raise TypeError("end must be numeric")
             notes.append(
                 Note(
                     t=float(raw["t"]),
                     button=None if button_raw is None else int(button_raw),
                     type=raw.get("type", "tap"),
-                    end=None if raw.get("end") is None else float(raw["end"]),
+                    end=end,
                     sensor="" if sensor_raw is None else str(sensor_raw),
                     slide=slide,
                     is_break=bool(raw.get("is_break", False)),
