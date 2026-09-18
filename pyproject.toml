@@ -8,14 +8,18 @@ version = "0.1.0"
 description = "Closed-loop maimai rhythm game driven by the flybrain connectome"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "websockets>=12",
 ]
 
 [project.optional-dependencies]
 brain = ["flybrain>=0.1.0"]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
 
 [project.scripts]
 fly-rg = "fly_rg.play:main"
@@ -25,3 +29,37 @@ include = ["fly_rg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:ignoring invalid:UserWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-ignore = [
+    "BLE001",
+    "S110",
+    "I001",
+    "SIM114",
+    "RUF022",
+    "FURB136",
+    "C401",
+    "SIM103",
+    "PLC0206",
+    "F841",
+    "PLW0127",
+    "RUF059",
+    "RUF100",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"fly_rg/brain_backend.py" = ["E501"]
+"tests/test_play.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = false
