@@ -14,7 +14,7 @@ from typing import Literal
 Area = Literal["A", "B", "C", "D", "E"]
 
 # Zone-center radii on the unit disk (Unity distance / 4.8).
-# From MajdataView TouchDrop.GetAreaPos in local sources/; do not copy C#.
+# From MajdataView TouchDrop.GetAreaPos; do not vendor C#.
 # Outer ring is one band of 16 A/D wedges; E sits in the B-ring gaps.
 RADIUS = {
     "C": 0.0,

@@ -17,6 +17,7 @@ def chart_message(
     *,
     active: list | None = None,
     active_sensors: list | None = None,
+    warnings: int | None = None,
 ) -> dict[str, Any]:
     d = chart.to_dict()
     msg: dict[str, Any] = {
@@ -29,6 +30,8 @@ def chart_message(
         msg["active"] = active
     if active_sensors is not None:
         msg["active_sensors"] = active_sensors
+    if warnings:
+        msg["warnings"] = int(warnings)
     return msg
 
 

@@ -22,7 +22,6 @@ STEER_WINDOW_S = 0.14
 TAP_WINDOW_S = 0.06
 TAP_SPIKES = 1
 TAP_COOLDOWN_S = 0.010
-TAP_GROWTH = 0.05
 OMEGA_MAX = 3.0 * math.tau
 VR_MAX = 4.0
 V_MAX = 8.0
@@ -142,8 +141,6 @@ class ActionDecoder:
         self._hist: deque[tuple[float, dict[str, float]]] = deque()
         self._prev_tap_l = 0.0
         self._prev_tap_r = 0.0
-        self._prev_growth_l = 0.0
-        self._prev_growth_r = 0.0
         self._last_tap_l_t = -1e9
         self._last_tap_r_t = -1e9
         self.x_l, self.y_l = sensor_xy(REST_HOME["L"])
@@ -228,18 +225,13 @@ class ActionDecoder:
 
         tap_l_now = self._counts["tap_L"]
         tap_r_now = self._counts["tap_R"]
-        growth_l = float(drive.get("growthL", 0.0))
-        growth_r = float(drive.get("growthR", 0.0))
-        rising_l = (
-            tap_l_now >= TAP_SPIKES and self._prev_tap_l < TAP_SPIKES
-        ) or (growth_l >= TAP_GROWTH and self._prev_growth_l < TAP_GROWTH)
-        rising_r = (
-            tap_r_now >= TAP_SPIKES and self._prev_tap_r < TAP_SPIKES
-        ) or (growth_r >= TAP_GROWTH and self._prev_growth_r < TAP_GROWTH)
+        # Spike-only tap edge. The encoder injects growth{side} into the DNp tap
+        # cells, so short-circuiting on the growth drive here would double count
+        # the same signal and let taps fire with zero spikes.
+        rising_l = tap_l_now >= TAP_SPIKES and self._prev_tap_l < TAP_SPIKES
+        rising_r = tap_r_now >= TAP_SPIKES and self._prev_tap_r < TAP_SPIKES
         self._prev_tap_l = tap_l_now
         self._prev_tap_r = tap_r_now
-        self._prev_growth_l = growth_l
-        self._prev_growth_r = growth_r
 
         tap_l = rising_l and (now - self._last_tap_l_t) >= TAP_COOLDOWN_S
         tap_r = rising_r and (now - self._last_tap_r_t) >= TAP_COOLDOWN_S

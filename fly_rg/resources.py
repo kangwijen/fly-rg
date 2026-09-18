@@ -9,10 +9,13 @@ import sys
 import time
 from typing import Any
 
+psutil: Any | None = None
 try:
-    import psutil
+    import psutil as _psutil
 except ImportError:
-    psutil = None  # type: ignore[assignment]
+    pass
+else:
+    psutil = _psutil
 
 RESOURCE_PERIOD_S = 1.0
 _NVML_SUCCESS = 0
@@ -214,13 +217,18 @@ def _win_system_times() -> tuple[int, int] | None:
 
 
 def _linux_rss_bytes() -> int | None:
+    if sys.platform == "win32":
+        return None
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return None
     try:
         with open("/proc/self/statm", encoding="ascii") as fh:
             parts = fh.read().split()
         rss_pages = int(parts[1])
-        page = os.sysconf("SC_PAGE_SIZE")
+        page = sysconf("SC_PAGE_SIZE")
         return rss_pages * int(page)
-    except (OSError, IndexError, ValueError):
+    except (OSError, IndexError, ValueError, TypeError):
         return None
 
 
@@ -312,16 +320,16 @@ class ResourceMonitor:
             cpu_pct = _clamp_pct((dt_proc / dt_wall) * 100.0 / self._ncpu)
 
         times = _win_system_times() if sys.platform == "win32" else _linux_cpu_times()
-        sys_cpu_pct: float | None = None
+        host_cpu_pct: float | None = None
         if times is not None and self._sys_idle_total is not None:
             idle, total = times
             prev_idle, prev_total = self._sys_idle_total
             d_total = total - prev_total
             d_idle = idle - prev_idle
             if d_total > 0:
-                sys_cpu_pct = _clamp_pct((1.0 - d_idle / d_total) * 100.0)
+                host_cpu_pct = _clamp_pct((1.0 - d_idle / d_total) * 100.0)
         self._sys_idle_total = times
-        return cpu_pct, sys_cpu_pct
+        return cpu_pct, host_cpu_pct
 
     def _ram(self) -> tuple[float, float | None, float | None]:
         if self._psutil_proc is not None and psutil is not None:

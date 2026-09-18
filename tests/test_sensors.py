@@ -1,6 +1,6 @@
 """Tests for DX sensor geometry.
 
-RADIUS values are MajdataView TouchDrop.GetAreaPos / 4.8 (local sources/; do not copy C#).
+RADIUS values are MajdataView TouchDrop.GetAreaPos / 4.8; do not vendor C#.
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@ import math
 import pytest
 
 from fly_rg.brain_backend import MockBrain
-from fly_rg.decoder import TAP_COOLDOWN_S, V_MAX, ActionDecoder
+from fly_rg.decoder import TAP_COOLDOWN_S, TAP_TYPES, V_MAX, ActionDecoder
 from fly_rg.encoder import NoteEncoder
 from fly_rg.judge import Judge
 from fly_rg.play import _contact_sensors
@@ -105,6 +105,35 @@ def test_tap_uses_nearest_sensor_to_xy():
     assert occ == "B5"
     assert result.hand_l_sensor == occ
     assert result.hand_l_sensor != "A6"
+
+
+def test_decoder_tap_is_spike_only_not_growth_drive():
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    dec.observe([])
+    result = dec.decode(0.0, dt=DT, drive=_quiet_drive(growthL=1.0, growthR=1.0))
+    assert not result.tap_l
+    assert not result.tap_r
+    tap_cell = brain.cells(list(TAP_TYPES), "L")[0]
+    dec.observe([tap_cell])
+    spiked = dec.decode(0.004, dt=DT, drive=_quiet_drive())
+    assert spiked.tap_l
+    assert spiked.strike_l == pytest.approx(1.0)
+
+
+def test_tap_cooldown_suppresses_second_edge_within_window():
+    brain = MockBrain(dt=DT)
+    dec = ActionDecoder(brain)
+    tap_cell = brain.cells(list(TAP_TYPES), "L")[0]
+    edges = 0
+    for step_i, now in enumerate((0.0, 0.004)):
+        dec.observe([tap_cell])
+        result = dec.decode(now, dt=DT, drive=_quiet_drive())
+        if result.tap_l:
+            edges += 1
+        dec.observe([])
+        dec.decode(now + DT / 2, dt=DT, drive=_quiet_drive())
+    assert edges == 1
 
 
 def test_idle_rest_blobs_drift_toward_homes_without_jump():

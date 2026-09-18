@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from typing import Any, Never, Protocol
 
 from fly_rg.decoder import STEER_TYPES, TAP_TYPES, V_MAX
-from fly_rg.judge import GOOD, TOUCH_GOOD
+from fly_rg.judge import (
+    GOOD,
+    TOUCH_GOOD,
+    _bisect_left_t,
+    _bisect_right_t,
+    _is_hold,
+)
 from fly_rg.schema import Note
 from fly_rg.sensors import (
     REST_HOME,
@@ -250,6 +256,9 @@ class NoteEncoder:
         self._dnp: dict[str, Any] | None = None
         self._lock_l: int | None = None
         self._lock_r: int | None = None
+        self._enc_notes: list[Note] | None = None
+        self._enc_cursor_now: float | None = None
+        self._enc_matched_prefix = 0
         if brain is not None and not mock:
             self._cells = {
                 "loom": {
@@ -299,6 +308,62 @@ class NoteEncoder:
             return False
         return now <= note.slide.end_t
 
+    def _encode_note_indices(
+        self,
+        notes: list[Note],
+        now: float,
+        look_ahead_s: float,
+        matched: list[bool] | None,
+        slide_next: list[int] | None,
+    ) -> list[int]:
+        if notes is not self._enc_notes:
+            self._enc_notes = notes
+            self._enc_matched_prefix = 0
+        if self._enc_cursor_now is not None and now < self._enc_cursor_now:
+            self._enc_matched_prefix = 0
+        self._enc_cursor_now = now
+
+        while (
+            self._enc_matched_prefix < len(notes)
+            and matched is not None
+            and self._enc_matched_prefix < len(matched)
+            and matched[self._enc_matched_prefix]
+        ):
+            self._enc_matched_prefix += 1
+
+        hi = _bisect_right_t(notes, now + look_ahead_s)
+        seen: set[int] = set()
+        out: list[int] = []
+        for i in range(self._enc_matched_prefix, hi):
+            if matched is not None and i < len(matched) and matched[i]:
+                continue
+            out.append(i)
+            seen.add(i)
+
+        if slide_next is not None:
+            for i, nxt in enumerate(slide_next):
+                if nxt <= 0:
+                    continue
+                if matched is not None and i < len(matched) and matched[i]:
+                    continue
+                if i not in seen:
+                    out.append(i)
+                    seen.add(i)
+
+        i0 = _bisect_left_t(notes, now - look_ahead_s)
+        for i in range(i0):
+            if matched is not None and i < len(matched) and matched[i]:
+                continue
+            note = notes[i]
+            if not _is_hold(note) or note.end is None:
+                continue
+            if now < note.t - look_ahead_s or now > note.end:
+                continue
+            if i not in seen:
+                out.append(i)
+                seen.add(i)
+        return out
+
     def encode(
         self,
         notes: list[Note],
@@ -329,9 +394,10 @@ class NoteEncoder:
         }
 
         approaching: list[tuple[int, Note, float, str, int]] = []
-        for i, note in enumerate(notes):
-            if matched is not None and i < len(matched) and matched[i]:
-                continue
+        for i in self._encode_note_indices(
+            notes, now, look_ahead_s, matched, slide_next
+        ):
+            note = notes[i]
             nxt = 0 if slide_next is None else slide_next[i]
             sensor = note_target_sensor(note, slide_next=nxt)
             tth = note_window_tth(
@@ -421,11 +487,12 @@ class NoteEncoder:
             other_locked = (
                 self._lock_l is not None if other == "L" else self._lock_r is not None
             )
-            if best[closer] is None:
+            chosen = best[closer]
+            if chosen is None:
                 _assign(closer, row)
             elif (
                 best[other] is None
-                and str(row["sensor"]) != str(best[closer]["sensor"])
+                and str(row["sensor"]) != str(chosen["sensor"])
                 and not other_locked
             ):
                 _assign(other, row)

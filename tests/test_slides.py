@@ -38,6 +38,16 @@ def test_expand_slide_gt_half_flip_ccw():
     assert expand_slide(">", 4, 8) == ["A4", "A3", "A2", "A1", "A8"]
 
 
+def test_expand_slide_gt_from_5_short_arc():
+    assert expand_slide(">", 5, 3) == ["A5", "A4", "A3"]
+
+
+def test_expand_slide_p_from_7_uses_b6_not_b8():
+    path = expand_slide("p", 7, 3)
+    assert "B6" in path
+    assert "B8" not in path
+
+
 def test_expand_wifi_from_button_1():
     wifi = expand_wifi(1)
     assert len(wifi) == 3

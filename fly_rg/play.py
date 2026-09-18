@@ -7,10 +7,14 @@ import asyncio
 import json
 import time
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from re import Pattern
 from typing import Any, Never
 
 from websockets.asyncio.server import broadcast, serve
+from websockets.exceptions import ConnectionClosed, PayloadTooBig
+from websockets.typing import Origin
 
 from fly_rg.brain_backend import MockBrain, make_brain
 from fly_rg.chart import list_difficulties, parse_simai_subset
@@ -36,6 +40,16 @@ SPIKE_PERIOD_S = 0.050
 BRAIN_WARMUP = 16
 OVERRUN_MEAN_S = 0.008
 MAX_STEP_DT_S = 0.050
+# A DNp tap edge and the on-pad geometry gate do not land on the same motor step:
+# the spike edge leads the arrival by a few ms (measured ~20ms at dt=0.004), so
+# AND-ing them per step scores nothing. The edge arms the hand for this long.
+TAP_LATCH_S = 0.060
+MAX_MAIDATA_BYTES = 256 * 1024
+MAX_CHART_NOTES = 20_000
+# Incoming frame cap (library default is 1 MiB). Maidata is already capped at 256 KiB.
+WS_MAX_SIZE = 512 * 1024
+# Skip a client whose asyncio write buffer is at/above serve() write_limit (32 KiB).
+WRITE_BUFFER_SKIP = 32_768
 
 
 @dataclass
@@ -47,8 +61,115 @@ class Session:
     last_resources: dict[str, Any] | None = None
 
 
-def _error(message: str) -> dict[str, Any]:
-    return {"type": "error", "message": message}
+def _error(message: str, *, warning_count: int | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": "error", "message": message}
+    if warning_count:
+        msg["warnings"] = int(warning_count)
+    return msg
+
+
+def _parse_client_message(raw: str | bytes | bytearray) -> dict[str, Any]:
+    """Decode a client JSON object. Raises ValueError with a UI-safe reason."""
+    try:
+        msg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid JSON") from exc
+    if not isinstance(msg, dict):
+        raise TypeError("invalid JSON")
+    return msg
+
+
+def _reject_maidata_size(maidata: str) -> str | None:
+    if len(maidata.encode("utf-8")) > MAX_MAIDATA_BYTES:
+        return "maidata exceeds 256 KiB"
+    return None
+
+
+def _reject_note_count(n_notes: int) -> str | None:
+    if n_notes > MAX_CHART_NOTES:
+        return f"chart has more than {MAX_CHART_NOTES} notes"
+    return None
+
+
+def _skipped_note_count(caught: list[warnings.WarningMessage]) -> int:
+    n = 0
+    for item in caught:
+        if str(item.message).startswith("skipping note"):
+            n += 1
+    return n
+
+
+def _prepare_loaded_chart(
+    maidata: str,
+    difficulty: int | None,
+) -> tuple[Chart | None, int, dict[str, Any] | None]:
+    """Parse maidata for load_chart. Returns (chart, skipped, error_msg)."""
+    size_err = _reject_maidata_size(maidata)
+    if size_err is not None:
+        return None, 0, _error(size_err)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            chart = parse_simai_subset(maidata, difficulty=difficulty)
+        skipped = _skipped_note_count(caught)
+    except Exception as exc:  # noqa: BLE001  surface parse errors to the UI
+        return None, 0, _error(str(exc))
+    count_err = _reject_note_count(len(chart.notes))
+    if count_err is not None:
+        return None, skipped, _error(count_err, warning_count=skipped or None)
+    if not chart.notes:
+        return None, skipped, _error(
+            "chart has no playable notes",
+            warning_count=skipped or None,
+        )
+    return chart, skipped, None
+
+
+def _serve_origins(host: str, port: int) -> Sequence[Origin | Pattern[str] | None]:
+    """Allow-list for the local Vite UI and the bound play server origin.
+
+    None is included so local Python clients that send no Origin header still
+    connect. Browser pages must match an exact origin string.
+    """
+    origins: list[Origin | Pattern[str] | None] = [
+        None,
+        Origin("http://127.0.0.1:5173"),
+        Origin("http://localhost:5173"),
+        Origin(f"http://{host}:{port}"),
+    ]
+    seen: list[Origin | Pattern[str] | None] = []
+    for origin in origins:
+        if origin not in seen:
+            seen.append(origin)
+    return seen
+
+
+def _client_write_buffered(websocket: Any) -> int:
+    transport = getattr(websocket, "transport", None)
+    if transport is None:
+        return 0
+    getter = getattr(transport, "get_write_buffer_size", None)
+    if getter is None:
+        return 0
+    return int(getter())
+
+
+def _emit_to_clients(clients: set, payload: str) -> None:
+    """Push one frame; skip a client whose write buffer is already full."""
+    ready: list[Any] = []
+    for websocket in list(clients):
+        try:
+            if _client_write_buffered(websocket) >= WRITE_BUFFER_SKIP:
+                continue
+            ready.append(websocket)
+        except Exception:  # noqa: S112
+            continue
+    if not ready:
+        return
+    try:
+        broadcast(ready, payload)
+    except (ConnectionClosed, PayloadTooBig):
+        return
 
 
 def _levels_message(maidata: str) -> dict[str, Any]:
@@ -59,15 +180,38 @@ def _press_sensor(x: float, y: float) -> str | None:
     return nearest_sensor(x, y)
 
 
+@dataclass
+class TapLatch:
+    """Per-hand arm times set by DNp tap edges; an arm expires after TAP_LATCH_S.
+
+    A later edge on the same hand re-arms it, so sustained spiking keeps the hand
+    pressable while the geometry gate catches up.
+    """
+
+    armed_t: dict[str, float] = field(
+        default_factory=lambda: {"L": -1e9, "R": -1e9}
+    )
+
+    def arm(self, side: str, now: float) -> None:
+        self.armed_t[side] = float(now)
+
+    def is_armed(self, side: str, now: float) -> bool:
+        return (float(now) - self.armed_t[side]) <= TAP_LATCH_S
+
+
 def _want_press(
     *,
     tap: bool,
     occupancy: str | None,
     intended: str | None,
-    slide_target: str | None,
     tth: float | None = None,
 ) -> bool:
-    del tap, slide_target
+    """Press when a spike-armed hand sits on the intended pad at hit time.
+
+    `tap` is the latched DNp tap edge for this hand, so no spikes means no press.
+    """
+    if not tap:
+        return False
     if occupancy is None or intended is None:
         return False
     if occupancy != intended:
@@ -80,9 +224,13 @@ def _want_press(
 def _contact_sensors(judge: Judge, now: float) -> set[str]:
     """Pads that should stay planted (hold sustain / in-progress slide)."""
     out: set[str] = set()
-    for i, note in enumerate(judge.notes):
+    notes = judge.notes
+    for i in judge._live:
+        note = notes[i]
         nt = note.type
         if nt == "hold" or nt == "touch_hold":
+            if not judge.hold_started[i] or judge.matched[i]:
+                continue
             end = note.end if note.end is not None else note.t
             if note.t <= now <= end:
                 out.add(note.sensor)
@@ -101,14 +249,17 @@ def _contact_sensors(judge: Judge, now: float) -> set[str]:
 
 
 async def _resource_loop(session: Session, monitor: ResourceMonitor) -> None:
+    fail_logged = False
     while True:
         try:
             stats = monitor.sample()
             session.last_resources = stats
             if session.clients:
-                broadcast(session.clients, dumps(resources_message(stats)))
-        except Exception:
-            pass
+                _emit_to_clients(session.clients, dumps(resources_message(stats)))
+        except Exception as exc:
+            if not fail_logged:
+                fail_logged = True
+                print(f"resource loop error: {exc}", flush=True)
         await asyncio.sleep(RESOURCE_PERIOD_S)
 
 
@@ -174,14 +325,20 @@ async def _play_once(
     encoder: NoteEncoder,
     atlas: NeuronAtlas,
     args: argparse.Namespace,
+    parse_warnings: int = 0,
 ) -> None:
+    emit_fail_logged = False
+
     def emit(msg: dict) -> None:
+        nonlocal emit_fail_logged
         if not session.clients:
             return
         try:
-            broadcast(session.clients, dumps(msg))
-        except Exception:
-            pass
+            _emit_to_clients(session.clients, dumps(msg))
+        except Exception as exc:
+            if not emit_fail_logged:
+                emit_fail_logged = True
+                print(f"ws emit error: {exc}", flush=True)
 
     last_note_t = max((n.t for n in chart.notes), default=0.0)
     # Pad for holds/slides that extend past last head time.
@@ -201,6 +358,7 @@ async def _play_once(
             chart,
             active=judge.active_notes(0.0, args.look_ahead),
             active_sensors=judge.active_sensors(0.0, args.look_ahead),
+            warnings=parse_warnings or None,
         )
     )
     await _pace(0.0)
@@ -218,6 +376,7 @@ async def _play_once(
     last_spikes_t = -1e9
     last_drive: dict[str, float] = {}
     last_fired: list = []
+    tap_latch = TapLatch()
     overrun_logged = False
     step_times: list[float] = []
     brain_steps = 0
@@ -288,7 +447,12 @@ async def _play_once(
             contact=_contact_sensors(judge, sim_t),
         )
 
-        for miss in judge.auto_miss(sim_t):
+        occupancy_l = _press_sensor(*dec.hand_l)
+        occupancy_r = _press_sensor(*dec.hand_r)
+        for miss in judge.auto_miss(
+            sim_t,
+            {s for s in (occupancy_l, occupancy_r) if s is not None},
+        ):
             _log_judgment(miss, chart.notes)
             emit(
                 hit_message(
@@ -300,20 +464,21 @@ async def _play_once(
                 )
             )
 
-        occupancy_l = _press_sensor(*dec.hand_l)
+        if dec.tap_l:
+            tap_latch.arm("L", sim_t)
+        if dec.tap_r:
+            tap_latch.arm("R", sim_t)
+
         press_l = _want_press(
-            tap=dec.tap_l,
+            tap=tap_latch.is_armed("L", sim_t),
             occupancy=occupancy_l,
             intended=enc.target_l,
-            slide_target=enc.slide_l,
             tth=enc.tth_l,
         )
-        occupancy_r = _press_sensor(*dec.hand_r)
         press_r = _want_press(
-            tap=dec.tap_r,
+            tap=tap_latch.is_armed("R", sim_t),
             occupancy=occupancy_r,
             intended=enc.target_r,
-            slide_target=enc.slide_r,
             tth=enc.tth_r,
         )
         if press_l and occupancy_l is not None:
@@ -457,7 +622,7 @@ async def run_play(args: argparse.Namespace) -> None:
                 pass
         session.play_task = None
 
-    async def start_chart(chart: Chart) -> None:
+    async def start_chart(chart: Chart, *, parse_warnings: int = 0) -> None:
         await stop_play()
         session.stop_event = asyncio.Event()
         session.chart = chart
@@ -470,6 +635,7 @@ async def run_play(args: argparse.Namespace) -> None:
                 encoder=encoder,
                 atlas=atlas,
                 args=args,
+                parse_warnings=parse_warnings,
             )
         )
 
@@ -490,15 +656,19 @@ async def run_play(args: argparse.Namespace) -> None:
             )
             async for raw in websocket:
                 try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    await websocket.send(dumps(_error("invalid JSON")))
+                    msg = _parse_client_message(raw)
+                except (ValueError, TypeError) as exc:
+                    await websocket.send(dumps(_error(str(exc))))
                     continue
                 mtype = msg.get("type")
                 if mtype == "inspect_chart":
                     maidata = str(msg.get("maidata") or "")
                     if not maidata.strip():
                         await websocket.send(dumps(_error("maidata is empty")))
+                        continue
+                    size_err = _reject_maidata_size(maidata)
+                    if size_err is not None:
+                        await websocket.send(dumps(_error(size_err)))
                         continue
                     last_maidata["text"] = maidata
                     await websocket.send(dumps(_levels_message(maidata)))
@@ -511,16 +681,16 @@ async def run_play(args: argparse.Namespace) -> None:
                     difficulty = msg.get("difficulty")
                     try:
                         diff = int(difficulty) if difficulty is not None else None
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            chart = parse_simai_subset(maidata, difficulty=diff)
-                    except Exception as exc:  # noqa: BLE001 — surface to UI
+                    except (TypeError, ValueError) as exc:
                         await websocket.send(dumps(_error(str(exc))))
                         continue
-                    if not chart.notes:
-                        await websocket.send(dumps(_error("chart has no playable notes")))
+                    chart, skipped, err = _prepare_loaded_chart(maidata, diff)
+                    if err is not None or chart is None:
+                        await websocket.send(
+                            dumps(err or _error("chart load failed"))
+                        )
                         continue
-                    await start_chart(chart)
+                    await start_chart(chart, parse_warnings=skipped)
                 elif mtype == "stop":
                     await stop_play()
                     await websocket.send(dumps({"type": "ready", "message": "stopped"}))
@@ -534,9 +704,15 @@ async def run_play(args: argparse.Namespace) -> None:
 
     resource_task = asyncio.create_task(_resource_loop(session, monitor))
     try:
-        async with serve(handler, args.host, args.port):
+        async with serve(
+            handler,
+            args.host,
+            args.port,
+            origins=_serve_origins(args.host, args.port),
+            max_size=WS_MAX_SIZE,
+        ):
             print(
-                f"websocket ws://{args.host}:{args.port} — waiting for zip upload from the UI",
+                f"websocket ws://{args.host}:{args.port} waiting for zip upload from the UI",
                 flush=True,
             )
             await asyncio.Future()  # run forever
