@@ -2,22 +2,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Cabinet } from "./cabinet";
 import { FruitFly } from "./fly";
-import type { ActiveNote, Pose } from "./protocol";
-import { RingDisplay } from "./ring";
-import { sensorXY } from "./sensors";
-
-/** Idle homes on the unit disk: left A6, right A3. */
-const HOME_L = sensorXY("A6");
-const HOME_R = sensorXY("A3");
-
-function isUnitXY(value: unknown): value is [number, number] {
-  return (
-    Array.isArray(value) &&
-    value.length >= 2 &&
-    Number.isFinite(value[0]) &&
-    Number.isFinite(value[1])
-  );
-}
+import type { Pose } from "./protocol";
+import { HOME_L, HOME_R, isUnitXY, resolveHand, RingDisplay } from "./ring";
 
 export class ArcadeScene {
   readonly ring = new RingDisplay();
@@ -35,6 +21,8 @@ export class ArcadeScene {
   private resizeObserver: ResizeObserver;
   private handLXY: [number, number] | null = null;
   private handRXY: [number, number] | null = null;
+  private onFrame: (() => void) | null = null;
+  private visibilityBound = false;
   private readonly _leftAim = new THREE.Vector3();
   private readonly _rightAim = new THREE.Vector3();
   private readonly _normal = new THREE.Vector3();
@@ -124,8 +112,6 @@ export class ArcadeScene {
     this.pose = pose;
   }
 
-  setActiveNotes(_notes: ActiveNote[]): void {}
-
   setHands(
     left?: [number, number] | null,
     right?: [number, number] | null,
@@ -134,19 +120,16 @@ export class ArcadeScene {
     this.handRXY = isUnitXY(right) ? right : null;
   }
 
-  setAimSensor(sensor: string | null): void {
-    if (sensor) this.fly.setAimSensor(sensor);
-  }
-
-  setAimButton(button: number | null): void {
-    if (button == null) return;
-    this.fly.setAimButton(button);
-  }
-
-  start(): void {
-    if (this.running) return;
+  start(onFrame?: () => void): void {
+    if (onFrame) this.onFrame = onFrame;
     this.running = true;
-    this.renderer.setAnimationLoop(this.tick);
+    if (!this.visibilityBound) {
+      document.addEventListener("visibilitychange", this.onVisibility);
+      this.visibilityBound = true;
+    }
+    if (!document.hidden) {
+      this.renderer.setAnimationLoop(this.tick);
+    }
   }
 
   stop(): void {
@@ -156,22 +139,19 @@ export class ArcadeScene {
 
   dispose(): void {
     this.stop();
+    if (this.visibilityBound) {
+      document.removeEventListener("visibilitychange", this.onVisibility);
+      this.visibilityBound = false;
+    }
     this.controls.dispose();
     this.resizeObserver.disconnect();
+    disposeGpuResources(this.scene);
     this.renderer.dispose();
   }
 
-  private handUnit(
-    xy: [number, number] | null,
-    home: { x: number; y: number },
-  ): { x: number; y: number } {
-    if (xy) return { x: xy[0], y: xy[1] };
-    return home;
-  }
-
   private syncFlyContacts(): void {
-    const left = this.handUnit(this.handLXY, HOME_L);
-    const right = this.handUnit(this.handRXY, HOME_R);
+    const left = resolveHand(this.handLXY, HOME_L);
+    const right = resolveHand(this.handRXY, HOME_R);
     this.cabinet.sensorWorldPos(left.x, left.y, this._leftAim);
     this.cabinet.sensorWorldPos(right.x, right.y, this._rightAim);
     this.cabinet.screenNormalWorld(this._normal);
@@ -185,7 +165,6 @@ export class ArcadeScene {
     this.cabinet.screenCenterWorld(this._lookAt);
     this.controls.target.copy(this._lookAt);
     this.controls.target.y -= 0.05;
-    // Behind and to the right of the fly (not top-down).
     this.camera.position.set(1.85, 1.95, 3.35);
     this.controls.update();
   }
@@ -198,14 +177,61 @@ export class ArcadeScene {
     this.renderer.setSize(w, h, false);
   };
 
+  private onVisibility = (): void => {
+    if (!this.running) return;
+    if (document.hidden) this.renderer.setAnimationLoop(null);
+    else this.renderer.setAnimationLoop(this.tick);
+  };
+
   private tick = (): void => {
+    const nowMs = performance.now();
     const elapsed = this.clock.getElapsedTime();
-    this.ring.draw(performance.now());
-    this.cabinet.updateTexture();
-    this.cabinet.setButtonStates(this.ring.getAButtonStates(performance.now()));
+    if (this.ring.draw(nowMs)) {
+      this.cabinet.updateTexture();
+    }
+    this.cabinet.setButtonStates(this.ring.getAButtonStates(nowMs));
     this.syncFlyContacts();
     this.fly.update(this.pose, elapsed);
+    this.onFrame?.();
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
+}
+
+const TEXTURE_KEYS = [
+  "map",
+  "lightMap",
+  "aoMap",
+  "emissiveMap",
+  "bumpMap",
+  "normalMap",
+  "displacementMap",
+  "roughnessMap",
+  "metalnessMap",
+  "alphaMap",
+  "envMap",
+] as const;
+
+function disposeGpuResources(root: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    geometries.add(obj.geometry);
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const mat of mats) {
+      materials.add(mat);
+      const record = mat as unknown as Record<string, unknown>;
+      for (const key of TEXTURE_KEYS) {
+        const value = record[key];
+        if (value instanceof THREE.Texture) textures.add(value);
+      }
+    }
+  });
+
+  for (const texture of textures) texture.dispose();
+  for (const material of materials) material.dispose();
+  for (const geometry of geometries) geometry.dispose();
 }

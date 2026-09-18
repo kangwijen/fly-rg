@@ -8,6 +8,7 @@ const EMPTY_SCORE: Score = {
   great: 0,
   good: 0,
   miss: 0,
+  mine: 0,
   accuracy: 0,
   achievement: 0,
   dx_score: 0,
@@ -113,9 +114,12 @@ export class Hud {
   private greatEl: HTMLElement;
   private goodEl: HTMLElement;
   private missEl: HTMLElement;
+  private mineEl: HTMLElement;
   private judgmentFlashEl: HTMLElement;
   private judgmentTimer = 0;
   private hintEl: HTMLElement;
+  private connectionHintEl: HTMLElement;
+  private errorEl: HTMLElement;
   private metaEl: HTMLElement;
   private brainHost: HTMLElement;
   private levelSelect: HTMLSelectElement;
@@ -132,18 +136,23 @@ export class Hud {
     gameOverlay.innerHTML = `
       <div class="hud-judgment-flash" data-judgment-flash hidden></div>
       <div class="hud-title-block">
-        <div class="hud-brand">fly-rg</div>
+        <h1 class="hud-brand">fly-rg</h1>
         <div class="hud-title" data-title>Upload a chart zip</div>
         <div class="hud-artist" data-artist></div>
-        <div class="hud-hint" data-hint>Majdata pack: maidata.txt + track.ogg/mp3 + bg.png/jpg (+ pv.mp4). Drag to orbit.</div>
+        <div class="hud-connection-hint" data-connection-hint aria-live="polite"></div>
+        <div class="hud-hint" data-hint aria-live="polite">Majdata pack: maidata.txt + track.ogg/mp3 + bg.png/jpg (+ pv.mp4). Drag to orbit.</div>
+        <div class="hud-error" data-error role="alert" aria-live="assertive" hidden></div>
         <div class="hud-upload">
           <label class="upload-btn">
             Choose zip
-            <input type="file" accept=".zip,application/zip" data-zip hidden />
+            <input type="file" accept=".zip,application/zip" data-zip class="visually-hidden" />
           </label>
-          <select data-level disabled>
-            <option value="">difficulty</option>
-          </select>
+          <label class="level-field">
+            <span class="level-label">Difficulty</span>
+            <select data-level id="hud-level-select" aria-label="Difficulty" disabled>
+              <option value="">difficulty</option>
+            </select>
+          </label>
           <button type="button" data-play disabled>Play</button>
           <button type="button" data-stop disabled>Stop</button>
         </div>
@@ -154,10 +163,10 @@ export class Hud {
     neuralPane.innerHTML = `
       <div class="neural-header">
         <div>
-          <div class="neural-title">Neural Activity</div>
+          <h2 class="neural-title">Neural Activity</h2>
           <div class="neural-meta" data-meta>waiting for layout</div>
         </div>
-        <div class="hud-status" data-status data-state="connecting">connecting</div>
+        <div class="hud-status" data-status data-state="connecting" aria-live="polite">connecting</div>
       </div>
       <div class="brain-host" data-brain></div>
       <div class="brain-legend">
@@ -177,6 +186,7 @@ export class Hud {
           <div>GREAT <b data-great>0</b></div>
           <div>GOOD <b data-good>0</b></div>
           <div>MISS <b data-miss>0</b></div>
+          <div>MINE <b data-mine>0</b></div>
         </div>
       </div>
       <div class="hud-drives">
@@ -204,6 +214,8 @@ export class Hud {
     this.titleEl = this.mustGame("[data-title]");
     this.artistEl = this.mustGame("[data-artist]");
     this.hintEl = this.mustGame("[data-hint]");
+    this.connectionHintEl = this.mustGame("[data-connection-hint]");
+    this.errorEl = this.mustGame("[data-error]");
     this.statusEl = this.mustNeural("[data-status]");
     this.metaEl = this.mustNeural("[data-meta]");
     this.comboEl = this.mustNeural("[data-combo]");
@@ -215,6 +227,7 @@ export class Hud {
     this.greatEl = this.mustNeural("[data-great]");
     this.goodEl = this.mustNeural("[data-good]");
     this.missEl = this.mustNeural("[data-miss]");
+    this.mineEl = this.mustNeural("[data-mine]");
     this.brainHost = this.mustNeural("[data-brain]");
     this.levelSelect = this.mustGame("[data-level]") as HTMLSelectElement;
     this.fileInput = this.mustGame("[data-zip]") as HTMLInputElement;
@@ -277,13 +290,13 @@ export class Hud {
     this.statusEl.dataset.state = state;
     this.statusEl.textContent = state;
     if (state === "open") {
-      this.hintEl.textContent =
+      this.connectionHintEl.textContent =
         "connected · upload a Majdata zip · drag canvas to orbit";
     } else if (state === "closed" || state === "error") {
-      this.hintEl.textContent =
+      this.connectionHintEl.textContent =
         "Server offline. Run: python -m fly_rg.play --mock";
     } else {
-      this.hintEl.textContent = "connecting to play server...";
+      this.connectionHintEl.textContent = "connecting to play server...";
     }
   }
 
@@ -310,6 +323,7 @@ export class Hud {
   }
 
   setPackHint(text: string): void {
+    this.clearError();
     this.hintEl.textContent = text;
   }
 
@@ -324,7 +338,13 @@ export class Hud {
   }
 
   setError(message: string): void {
-    this.hintEl.textContent = message;
+    this.errorEl.textContent = message;
+    this.errorEl.hidden = false;
+  }
+
+  clearError(): void {
+    this.errorEl.textContent = "";
+    this.errorEl.hidden = true;
   }
 
   setBrainMeta(neurons: number, spikeTotal: number): void {
@@ -350,6 +370,7 @@ export class Hud {
     this.greatEl.textContent = String(score.great);
     this.goodEl.textContent = String(score.good);
     this.missEl.textContent = String(score.miss);
+    this.mineEl.textContent = String(score.mine ?? 0);
   }
 
   flashJudgment(judgment: Judgment, timing?: "fast" | "late" | null): void {

@@ -7,6 +7,7 @@ export interface Score {
   great: number;
   good: number;
   miss: number;
+  mine?: number;
   accuracy: number;
   achievement: number;
   dx_score: number;
@@ -89,6 +90,7 @@ export interface ChartMessage {
   notes: ChartNote[];
   active?: ActiveNote[];
   active_sensors?: string[];
+  warnings?: number;
 }
 
 export interface BrainLayoutMessage {
@@ -139,6 +141,7 @@ export interface EndMessage {
 export interface ReadyMessage {
   type: "ready";
   message?: string;
+  warnings?: number;
 }
 
 export interface LevelsMessage {
@@ -149,6 +152,7 @@ export interface LevelsMessage {
 export interface ErrorMessage {
   type: "error";
   message: string;
+  warnings?: number;
 }
 
 export interface Resources {

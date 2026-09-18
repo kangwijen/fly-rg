@@ -194,10 +194,6 @@ export class FruitFly {
     this.screenNormal.copy(normalWorld).normalize();
   }
 
-  setAimButton(_button: number | null): void {}
-
-  setAimSensor(_sensor: string | null): void {}
-
   update(pose: Pose, elapsed: number): void {
     const aim = Math.max(-1, Math.min(1, pose.aim));
     const strike = Math.max(0, Math.min(1, pose.strike));

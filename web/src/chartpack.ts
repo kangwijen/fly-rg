@@ -35,6 +35,28 @@ function findEntry(names: string[], candidates: string[]): string | null {
   return null;
 }
 
+function trackMimeFor(path: string | null): string {
+  if (!path) return "audio/ogg";
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".wav")) return "audio/wav";
+  return "audio/ogg";
+}
+
+function bgMimeFor(path: string | null): string {
+  if (!path) return "image/jpeg";
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
+function pvMimeFor(path: string | null): string {
+  if (!path) return "video/mp4";
+  if (path.toLowerCase().endsWith(".webm")) return "video/webm";
+  return "video/mp4";
+}
+
 /**
  * Unpack a Majdata-style chart zip (folder optional):
  * maidata.txt, track.ogg|mp3, bg.png|jpg, pv.mp4 (optional).
@@ -63,23 +85,27 @@ export async function unpackChartZip(file: File): Promise<ChartPack> {
   const bgPath = findEntry(names, ["bg.png", "bg.jpg", "bg.jpeg", "bg.webp"]);
   const pvPath = findEntry(names, ["pv.mp4", "pv.webm"]);
 
-  const trackMime = trackPath?.toLowerCase().endsWith(".mp3")
-    ? "audio/mpeg"
-    : trackPath?.toLowerCase().endsWith(".wav")
-      ? "audio/wav"
-      : "audio/ogg";
-  const bgMime = bgPath?.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+  try {
+    const trackUrl = await blobUrl(trackPath, trackMimeFor(trackPath));
+    const bgUrl = await blobUrl(bgPath, bgMimeFor(bgPath));
+    const pvUrl = await blobUrl(pvPath, pvMimeFor(pvPath));
 
-  return {
-    maidata,
-    trackUrl: await blobUrl(trackPath, trackMime),
-    trackName: trackPath ? baseName(trackPath) : null,
-    bgUrl: await blobUrl(bgPath, bgMime),
-    bgName: bgPath ? baseName(bgPath) : null,
-    pvUrl: await blobUrl(pvPath, "video/mp4"),
-    pvName: pvPath ? baseName(pvPath) : null,
-    objectUrls,
-  };
+    return {
+      maidata,
+      trackUrl,
+      trackName: trackPath ? baseName(trackPath) : null,
+      bgUrl,
+      bgName: bgPath ? baseName(bgPath) : null,
+      pvUrl,
+      pvName: pvPath ? baseName(pvPath) : null,
+      objectUrls,
+    };
+  } catch (err) {
+    for (const url of objectUrls) {
+      URL.revokeObjectURL(url);
+    }
+    throw err;
+  }
 }
 
 export function revokeChartPack(pack: ChartPack | null): void {

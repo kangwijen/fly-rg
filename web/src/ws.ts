@@ -7,14 +7,72 @@ export type WsHandlers = {
   onState?: (state: ConnectionState) => void;
 };
 
+function pageHostname(): string {
+  return window.location.hostname.toLowerCase();
+}
+
+function isLocalPageHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]";
+}
+
+function isAllowedWsHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (isLocalPageHost(h)) return true;
+  return h === pageHostname();
+}
+
+function defaultWsUrl(): string {
+  const host = window.location.hostname;
+  if (window.location.protocol === "https:" && !isLocalPageHost(host)) {
+    return `wss://${host}:8765`;
+  }
+  return "ws://127.0.0.1:8765";
+}
+
+function normalizeWsUrl(raw: string): string | null {
+  let candidate = raw.trim();
+  if (!candidate) return null;
+
+  if (!/^wss?:\/\//i.test(candidate)) {
+    candidate = `ws://${candidate}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    console.error(`Invalid WebSocket URL, using default: ${raw}`);
+    return null;
+  }
+
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+    console.error(`WebSocket URL must use ws: or wss:, using default: ${raw}`);
+    return null;
+  }
+
+  if (!isAllowedWsHost(parsed.hostname)) {
+    console.error(
+      `WebSocket host not allow-listed (${parsed.hostname}), using default`,
+    );
+    return null;
+  }
+
+  return parsed.toString();
+}
+
 function resolveUrl(explicit?: string): string {
-  if (explicit) return explicit;
+  if (explicit) {
+    return normalizeWsUrl(explicit) ?? defaultWsUrl();
+  }
 
   const params = new URLSearchParams(window.location.search);
   const override = params.get("ws");
-  if (override) return override;
+  if (override) {
+    return normalizeWsUrl(override) ?? defaultWsUrl();
+  }
 
-  return "ws://127.0.0.1:8765";
+  return defaultWsUrl();
 }
 
 export class GameSocket {
@@ -35,7 +93,16 @@ export class GameSocket {
     this.clearReconnect();
     this.setState("connecting");
 
-    const socket = new WebSocket(this.url);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(this.url);
+    } catch (err) {
+      console.error("WebSocket constructor failed:", err);
+      this.setState("error");
+      this.scheduleReconnect();
+      return;
+    }
+
     this.socket = socket;
 
     socket.addEventListener("open", () => {
@@ -44,12 +111,17 @@ export class GameSocket {
     });
 
     socket.addEventListener("message", (event) => {
+      let data: unknown;
       try {
-        const data = JSON.parse(String(event.data)) as unknown;
-        if (!isServerMessage(data)) return;
-        this.handlers.onMessage?.(data);
+        data = JSON.parse(String(event.data)) as unknown;
       } catch {
-        // ignore malformed frames
+        return;
+      }
+      if (!isServerMessage(data)) return;
+      try {
+        this.handlers.onMessage?.(data);
+      } catch (err) {
+        console.error("WebSocket message handler failed:", err);
       }
     });
 

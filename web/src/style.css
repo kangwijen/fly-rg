@@ -99,6 +99,7 @@ body,
   text-transform: uppercase;
   font-size: 0.78rem;
   color: var(--cyan);
+  line-height: 1.2;
 }
 
 .neural-meta {
@@ -175,6 +176,18 @@ body,
   background: #ffb23e;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .hud-brand {
   font-family: "Space Grotesk", sans-serif;
   font-weight: 700;
@@ -199,12 +212,49 @@ body,
   font-size: 0.8rem;
 }
 
+.hud-connection-hint {
+  margin-top: 0.35rem;
+  max-width: 28rem;
+  color: var(--muted);
+  font-size: 0.65rem;
+  line-height: 1.35;
+}
+
+.hud-connection-hint:empty {
+  display: none;
+}
+
 .hud-hint {
   margin-top: 0.35rem;
   max-width: 28rem;
   color: var(--amber);
   font-size: 0.68rem;
   line-height: 1.35;
+}
+
+.hud-error {
+  margin-top: 0.35rem;
+  max-width: 28rem;
+  color: var(--miss);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.hud-error[hidden] {
+  display: none;
+}
+
+.level-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.level-label {
+  font-size: 0.62rem;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .hud-upload {
@@ -238,6 +288,13 @@ body,
 .hud-upload select:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.upload-btn:focus-within,
+.hud-upload button:focus-visible,
+.hud-upload select:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
 }
 
 .neural-score {

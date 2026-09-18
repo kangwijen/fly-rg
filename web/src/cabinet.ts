@@ -6,12 +6,18 @@ import type { RingDisplay } from "./ring";
 export const SCREEN_RADIUS = 0.84;
 /** Screen center in cabinet local space. */
 export const SCREEN_LOCAL = new THREE.Vector3(0, 1.72, 0.66);
+/** Overlay canvas sits just in front of the PV screen. */
+const SCREEN_OVERLAY_Z = 0.008;
+const SCREEN_FALLBACK = 0x05070c;
 
 export class Cabinet {
   readonly group = new THREE.Group();
+  /** Ring overlay CanvasTexture; uploaded only when the 2D canvas changes. */
   readonly screenTexture: THREE.CanvasTexture;
   readonly buttons: ButtonRing;
   private screenMaterial: THREE.MeshBasicMaterial;
+  private videoTexture: THREE.VideoTexture | null = null;
+  private video: HTMLVideoElement | null = null;
   private readonly _local = new THREE.Vector3();
   private readonly _normal = new THREE.Vector3();
 
@@ -60,19 +66,31 @@ export class Cabinet {
     bezel.position.set(0, 1.72, 0.54);
     this.group.add(bezel);
 
+    const screenGeom = new THREE.CircleGeometry(SCREEN_RADIUS, 64);
+
     this.screenMaterial = new THREE.MeshBasicMaterial({
+      color: SCREEN_FALLBACK,
+      toneMapped: false,
+    });
+    const screen = new THREE.Mesh(screenGeom, this.screenMaterial);
+    screen.position.copy(SCREEN_LOCAL);
+    this.group.add(screen);
+
+    const overlayMaterial = new THREE.MeshBasicMaterial({
       map: this.screenTexture,
       toneMapped: false,
       transparent: true,
       opacity: 1,
       depthWrite: false,
     });
-    const screen = new THREE.Mesh(
-      new THREE.CircleGeometry(SCREEN_RADIUS, 64),
-      this.screenMaterial,
+    const overlay = new THREE.Mesh(screenGeom, overlayMaterial);
+    overlay.position.set(
+      SCREEN_LOCAL.x,
+      SCREEN_LOCAL.y,
+      SCREEN_LOCAL.z + SCREEN_OVERLAY_Z,
     );
-    screen.position.copy(SCREEN_LOCAL);
-    this.group.add(screen);
+    overlay.renderOrder = 1;
+    this.group.add(overlay);
 
     this.buttons = new ButtonRing();
     this.buttons.group.position.copy(SCREEN_LOCAL);
@@ -127,7 +145,69 @@ export class Cabinet {
     return out.copy(this.group.localToWorld(this._local.copy(SCREEN_LOCAL)));
   }
 
+  /** Bind PV to the back screen. Pass null to dispose the VideoTexture. */
+  setVideo(video: HTMLVideoElement | null): void {
+    if (this.video === video) {
+      if (video) this.applyVideoCover();
+      return;
+    }
+    this.clearVideoTexture();
+    this.video = video;
+    if (!video) {
+      this.screenMaterial.map = null;
+      this.screenMaterial.color.setHex(SCREEN_FALLBACK);
+      this.screenMaterial.needsUpdate = true;
+      return;
+    }
+    const texture = new THREE.VideoTexture(video);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.flipY = true;
+    texture.needsUpdate = true;
+    this.videoTexture = texture;
+    this.applyVideoCover();
+    this.screenMaterial.map = texture;
+    this.screenMaterial.color.setHex(0xffffff);
+    this.screenMaterial.needsUpdate = true;
+  }
+
+  /** Upload the ring overlay canvas. Does not touch the PV VideoTexture. */
   updateTexture(): void {
     this.screenTexture.needsUpdate = true;
+  }
+
+  private clearVideoTexture(): void {
+    if (this.screenMaterial.map === this.videoTexture) {
+      this.screenMaterial.map = null;
+    }
+    if (this.videoTexture) {
+      this.videoTexture.dispose();
+      this.videoTexture = null;
+    }
+  }
+
+  private applyVideoCover(): void {
+    const texture = this.videoTexture;
+    const video = this.video;
+    if (!texture || !video) return;
+    const sw = video.videoWidth;
+    const sh = video.videoHeight;
+    if (!sw || !sh) {
+      texture.repeat.set(1, 1);
+      texture.offset.set(0, 0);
+      return;
+    }
+    const videoAspect = sw / sh;
+    if (videoAspect > 1) {
+      const repeatX = 1 / videoAspect;
+      texture.repeat.set(repeatX, 1);
+      texture.offset.set((1 - repeatX) / 2, 0);
+    } else {
+      const repeatY = videoAspect;
+      texture.repeat.set(1, repeatY);
+      texture.offset.set(0, (1 - repeatY) / 2);
+    }
   }
 }
